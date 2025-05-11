@@ -1,6 +1,7 @@
-import std/[strformat,strutils, tables, os,options, algorithm, sequtils, streams, sets, math] # Removed re
+import std/[strformat,strutils, tables, os,options, algorithm, sequtils, streams, sets, math]
 import ./bangumi_api      # Bangumi API 相关功能
 import ./utils            # 本地文件信息、文件/目录操作、缓存读写、工具函数等
+# import ./test except main # extractAnimeName 已内联，不再需要导入
 
 # --- 类型定义 ---
 type
@@ -8,41 +9,12 @@ type
     basePath*: string                # 基础路径
     animePath*: string               # 番剧目标路径
 
-  RuleConfig* = object               ## 匹配规则配置 (保留定义，但相关函数可能不再使用)
-    groups*: seq[string]             # 用于初步筛选的字幕组或关键词列表
-    pattern*: string                 # 用于提取番剧名称的正则表达式或普通字符串
+# RuleConfig 和 RuleSet 类型定义已删除
 
-  RuleSet* = seq[RuleConfig]         ## 规则配置集合 (保留定义，但相关函数可能不再使用)
-
-# --- 规则匹配相关函数 ---
-# proc extractMatch*(s: string, pattern: string): string = # 旧的正则提取函数，不再使用
-#   ## 使用正则表达式从字符串 s 中提取第一个匹配项。
-#   var matches: array[1, string]
-#   if s.find(re(pattern), matches) != -1:
-#     return matches[0]
-#   return ""
-
-# proc isPlainString*(s: string): bool = # 旧的辅助函数，不再直接需要
-#   ## 检查字符串是否不包含常见的正则表达式元字符。
-#   const regexMetaChars = {'[', ']', '(', ')', '{', '}', '?', '*', '+', '|', '^', '$', '.', '\\'}
-#   for c in s:
-#     if c in regexMetaChars:
-#       return false
-#   return true
-
-# proc matchRule*(title: string, rule: RuleConfig): Option[string] = # 旧的规则匹配函数，不再使用
-#   ## 根据单条规则匹配标题。
-#   if not rule.groups.anyIt(it in title):
-#     return none(string)
-#
-#   if isPlainString(rule.pattern):
-#     return some(rule.pattern)
-#
-#   let extracted = extractMatch(title, rule.pattern)
-#   if extracted.len > 0:
-#     return some(extracted)
-#   return none(string)
-proc extractAnimeName(line: string): string =
+# --- 番剧名提取函数 ---
+proc extractAnimeName*(line: string): string = # 设为导出，因为 processSampleData 会间接调用
+  ## 从文件夹名 (line) 中提取番剧名。
+  var extractedName = "" # 使用局部变量以避免与 proc 名冲突
   # 检查是否以 [ 开头
   if line.startsWith("["):
     # 检查是否为特殊情况：[xxx] name [xxx]
@@ -52,8 +24,8 @@ proc extractAnimeName(line: string): string =
       if line[firstCloseBracket + 1] == ' ':
         let nextOpenBracket = line.find("[", firstCloseBracket)
         if nextOpenBracket != -1:
-          result = line[firstCloseBracket + 1 .. nextOpenBracket - 1].strip()
-          return
+          extractedName = line[firstCloseBracket + 1 .. nextOpenBracket - 1].strip()
+          return extractedName # 直接返回
 
     # 分割字符串为数组
     let parts = line.split("]")
@@ -62,54 +34,26 @@ proc extractAnimeName(line: string): string =
     if parts[0].toLowerAscii() == "[rev":
       # 如果是 Rev 开头，取第三个位置
       if parts.len > 2:
-        result = parts[2].strip(leading=true, chars={'['})
+        extractedName = parts[2].strip(leading=true, chars={'['})
     else:
       # 否则取第二个位置
       if parts.len > 1:
-        result = parts[1].strip(leading=true, chars={'['})
+        extractedName = parts[1].strip(leading=true, chars={'['})
   else:
     # 如果不是以 [ 开头，寻找 _ 前的部分
     let underscorePos = line.find('_')
     if underscorePos != -1:
-      result = line[0..<underscorePos]
+      extractedName = line[0..<underscorePos]
   
   # 最后去除可能的前后空格
-  result = result.strip()
+  return extractedName.strip()
 
-proc findMatchingRule*(title: string, rules: RuleSet): string = # rules 参数暂时保留，但不再使用
-  ## 使用新的逻辑从文件夹名 (title) 中提取番剧名。
-  ## rules 参数是为了保持函数签名兼容性，但实际已不再使用。
-  return extractAnimeName(title) # 调用新的提取函数
+# findMatchingRule 现在直接使用 extractAnimeName
+# proc findMatchingRule*(title: string): string = # 旧签名: proc findMatchingRule*(title: string, rules: RuleSet): string
+#   ## 使用新的逻辑从文件夹名 (title) 中提取番剧名。
+#   return extractAnimeName(title)
 
-proc loadRules*(filename: string): RuleSet = # 此函数加载的规则不再被 findMatchingRule 使用
-  ## 从指定文件加载匹配规则。
-  result = @[]
-  if not fileExists(filename):
-    echo fmt"警告: 规则文件 '{filename}' 不存在。"
-    return
-  
-  let fileStream = newFileStream(filename, fmRead)
-  defer: fileStream.close()
-
-  for line in fileStream.lines:
-    let trimmedLine = line.strip()
-    if trimmedLine.len == 0 or trimmedLine.startsWith("#"):
-      continue
-
-    let parts = trimmedLine.split('=', 1)
-    if parts.len < 2:
-      echo fmt"警告：规则文件 '{filename}' 中的行格式错误 (缺少 '='): {trimmedLine}"
-      continue
-    
-    let groupsStr = parts[0].strip()
-    let patternStr = parts[1].strip()
-    
-    let groupsSeq = groupsStr.split(',').map(proc(s: string): string = s.strip())
-    
-    result.add(RuleConfig(
-      groups: groupsSeq,
-      pattern: patternStr
-    ))
+# loadRules 函数已删除
 
 # 全局变量和常量定义
 var
@@ -326,9 +270,9 @@ proc initializeConfig() =
 
 proc processSampleData(
     sampleFolderName: string,
-    rules: RuleSet,
-    csvCache: var Table[string, utils.CsvCacheEntry], # Updated type
-    jsonCache: var Table[string, utils.CachedSeasonInfo] # Updated type
+    # rules: RuleSet, # rules 参数已移除
+    csvCache: var Table[string, utils.CsvCacheEntry],
+    jsonCache: var Table[string, utils.CachedSeasonInfo]
   ) =
   ## 处理单个本地番剧文件夹：匹配规则、获取信息、更新缓存。
   var seasonToProcessOpt: Option[bangumi_api.Season] = none(bangumi_api.Season)
@@ -340,7 +284,7 @@ proc processSampleData(
     if not jsonCache.hasKey($entry.bangumiSeasonId):
       forceApiFetchForEpisodes = true
   else:
-    let matchedName = findMatchingRule(sampleFolderName, rules) # Updated call
+    let matchedName = extractAnimeName(sampleFolderName) # 直接调用 extractAnimeName
     if matchedName.len > 0:
       let seasonOptFromApi = bangumi_api.getSeason(matchedName)
       if seasonOptFromApi.isSome:
@@ -466,7 +410,7 @@ proc processSampleData(
 # --- 主逻辑 ---
 initializeConfig() # 初始化配置
 
-let rules = loadRules("cache/fansub.rules") # 加载字幕组/发布组匹配规则
+# let rules = loadRules("cache/fansub.rules") # loadRules 和 rules 变量已删除
 
 var csvCacheGlobal = if useCache: utils.readCsvCacheEntries(cacheFile) else: initTable[string, CsvCacheEntry]()
 var jsonCacheGlobal = if useCache: utils.loadJsonCache(jsonCacheFile) else: initTable[string, CachedSeasonInfo]()
@@ -478,7 +422,7 @@ if samples.len == 0:
   stderr.writeLine fmt"提示: 在{pathType} '{base_path_str}' 下未找到任何番剧文件夹。请确保文件夹存在或通过 -b=<路径> 指定。"
 
 for sample in samples:
-  processSampleData(sample, rules, csvCacheGlobal, jsonCacheGlobal)
+  processSampleData(sample, csvCacheGlobal, jsonCacheGlobal) # rules 参数已从调用中移除
 
 if useCache:
   utils.saveJsonCache(jsonCacheFile, jsonCacheGlobal) # 保存更新后的JSON缓存
