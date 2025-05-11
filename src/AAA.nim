@@ -260,6 +260,26 @@ if useCache:
           let seasonInfo = finalJsonCacheForRename[seasonIdStr]
           # echo fmt"  步骤 2: 重命名 '{targetSeasonDirForLinkAndRename}' 中的文件 (基于番剧: {seasonInfo.bangumiSeasonName})" # 减少输出
           renameFilesBasedOnCache(targetSeasonDirForLinkAndRename, seasonInfo, originalFolderNameInBase)
+          
+          # 诊断日志开始
+          let desiredSeasonFolderName = sanitizeFilename(seasonInfo.bangumiSeasonName)
+          # echo fmt"诊断日志: 原始目标文件夹名 (来自 base): '{originalFolderNameInBase}'"
+          # echo fmt"诊断日志: 期望的目标文件夹名 (来自 seasonInfo.bangumiSeasonName 并清理后): '{desiredSeasonFolderName}'"
+          # echo fmt"诊断日志: 当前已创建的硬链接文件夹完整路径: '{targetSeasonDirForLinkAndRename}'"
+          let potentialNewPath = anime_path_str / desiredSeasonFolderName
+          # echo fmt"诊断日志: 期望的硬链接文件夹新完整路径: '{potentialNewPath}'"
+          # 诊断日志结束
+
+          # --- 开始重命名目标文件夹 ---
+          if dirExists(targetSeasonDirForLinkAndRename) and targetSeasonDirForLinkAndRename != potentialNewPath:
+            try:
+              moveDir(targetSeasonDirForLinkAndRename, potentialNewPath)
+              echo fmt"  信息: 成功将文件夹 '{targetSeasonDirForLinkAndRename}' 重命名为 '{potentialNewPath}'"
+            except OSError as e:
+              stderr.writeLine fmt"  错误: 重命名文件夹 '{targetSeasonDirForLinkAndRename}' 到 '{potentialNewPath}' 失败: {e.msg}"
+          elif targetSeasonDirForLinkAndRename == potentialNewPath:
+            echo fmt"  信息: 文件夹 '{targetSeasonDirForLinkAndRename}' 名称已正确，无需重命名。"
+          # --- 结束重命名目标文件夹 ---
         else:
           stderr.writeLine fmt"警告: 在JSON缓存中未找到番剧ID '{seasonIdStr}' (来自文件夹 '{originalFolderNameInBase}') 的详细信息，无法重命名。"
       else:

@@ -145,29 +145,33 @@ proc renameFilesBasedOnCache*(
       # else: # 减少默认输出
         # echo fmt"      警告: 预期的硬链接视频文件 '{oldHardlinkedVideoPath}' (来自缓存条目 {videoInfo.nameOnly}{videoInfo.ext}) 在目标目录中未找到。"
 
-    if cachedEp.localSubtitleFile.isSome:
-      let subInfo = cachedEp.localSubtitleFile.get()
-      let originalFileNameWithExt = extractFilename(subInfo.fullPath)
-      let oldHardlinkedSubPath = targetSeasonPath / originalFileNameWithExt
+    # 处理多个字幕文件
+    if cachedEp.localSubtitleFiles.len > 0: # 检查序列是否为空
+      for subInfo in cachedEp.localSubtitleFiles: # 遍历序列中的每个字幕文件信息
+        let originalFileNameWithExt = extractFilename(subInfo.fullPath)
+        let oldHardlinkedSubPath = targetSeasonPath / originalFileNameWithExt
 
-      if fileExists(oldHardlinkedSubPath):
-        let baseNameWithoutExt = fmt"{episodeNumberFormatted} - {cleanEpisodeName}"
-        let finalBaseName = sanitizeFilename(baseNameWithoutExt)
-        let newSubFileNameWithExt = finalBaseName & subInfo.ext
-        
-        let newHardlinkedSubPath = targetSeasonPath / newSubFileNameWithExt
+        if fileExists(oldHardlinkedSubPath):
+          let baseNameWithoutExt = fmt"{episodeNumberFormatted} - {cleanEpisodeName}"
+          let finalBaseName = sanitizeFilename(baseNameWithoutExt)
+          let newSubFileNameWithExt = finalBaseName & subInfo.ext
+          
+          let newHardlinkedSubPath = targetSeasonPath / newSubFileNameWithExt
 
-        if oldHardlinkedSubPath != newHardlinkedSubPath:
-          try:
-            # echo fmt"      重命名字幕: '{oldHardlinkedSubPath}' -> '{newHardlinkedSubPath}'" # 减少默认输出
-            moveFile(oldHardlinkedSubPath, newHardlinkedSubPath)
-            renamedFilesCount += 1
-          except OSError as e:
-            stderr.writeLine fmt"      错误: 重命名字幕文件 '{oldHardlinkedSubPath}' 失败: {e.msg}"
-            renameErrorsCount += 1
-      # else: # 减少默认输出
-        # echo fmt"      警告: 预期的硬链接字幕文件 '{oldHardlinkedSubPath}' (来自缓存条目 {subInfo.nameOnly}{subInfo.ext}) 在目标目录中未找到。"
+          if oldHardlinkedSubPath != newHardlinkedSubPath:
+            try:
+              moveFile(oldHardlinkedSubPath, newHardlinkedSubPath)
+              renamedFilesCount += 1
+            except OSError as e:
+              stderr.writeLine fmt"      错误: 重命名字幕文件 '{oldHardlinkedSubPath}' 到 '{newHardlinkedSubPath}' 失败: {e.msg}"
+              renameErrorsCount += 1
+          # else: # 可以选择性保留此日志或移除
+            # echo fmt"      信息: 字幕文件 '{oldHardlinkedSubPath}' 名称已符合期望格式 '{newSubFileNameWithExt}'，无需重命名。"
+        else:
+          stderr.writeLine fmt"      警告: 预期的硬链接字幕文件 '{oldHardlinkedSubPath}' (来自缓存条目 {subInfo.nameOnly}{subInfo.ext}) 在目标目录中未找到。"
+    # else:
+      # echo fmt"调试: 番剧 '{seasonInfo.bangumiSeasonName}', 剧集 '{episodeNumberFormatted}' 没有找到关联的本地字幕文件。"
 
-  # echo fmt"    番剧 '{seasonInfo.bangumiSeasonName}' 重命名完成。成功: {renamedFilesCount} 个文件, 失败: {renameErrorsCount} 个。" # 减少默认输出
+  # echo fmt"    番剧 '{seasonInfo.bangumiSeasonName}' 重命名完成。成功: {renamedFilesCount} 个文件, 失败: {renameErrorsCount} 个。"
   if renameErrorsCount > 0:
     stderr.writeLine fmt"    番剧 '{seasonInfo.bangumiSeasonName}' 重命名期间发生 {renameErrorsCount} 个错误。"

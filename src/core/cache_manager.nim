@@ -1,6 +1,6 @@
 import ./types
 import ./utils_string # naturalCompare 在 updateAndSaveJsonCache 中使用
-import std/[strformat, strutils, re, json, tables, os, options, algorithm, sets]
+import std/[strformat, strutils, re, json, tables, os, options, algorithm, sets, sequtils] # 添加 sequtils
 
 # --- 缓存处理函数 ---
 
@@ -189,44 +189,42 @@ proc updateAndSaveJsonCache*(
   let seasonIdStr = $season.id
   var episodesForJson = initTable[string, CachedEpisodeInfo]() 
   
-  var usedByPreciseMatch = initHashSet[LocalFileInfo]() 
-  var preciseMatchResults = initTable[float, tuple[video: Option[LocalFileInfo], sub: Option[LocalFileInfo]]]()
+  var usedByPreciseMatch = initHashSet[LocalFileInfo]()
+  # 修改 preciseMatchResults 以存储字幕文件序列
+  var preciseMatchResults = initTable[float, tuple[video: Option[LocalFileInfo], subs: seq[LocalFileInfo]]]()
 
-  for ep in bangumiEpisodes.data: 
-    let bangumiEpNum = int(ep.sort) 
-    var currentFoundVideo: Option[LocalFileInfo] = none[LocalFileInfo]() 
-    var currentFoundSub: Option[LocalFileInfo] = none[LocalFileInfo]()   
+  for ep in bangumiEpisodes.data:
+    let bangumiEpNum = int(ep.sort)
+    var currentFoundVideo: Option[LocalFileInfo] = none[LocalFileInfo]()
+    var currentFoundSubs: seq[LocalFileInfo] = @[] # 用于收集当前剧集所有匹配的字幕
 
-    for localFile in originalMatchedLocalFiles: 
-      let localEpNumOpt = extractEpisodeNumberFromName(localFile.nameOnly) 
-      
-      if localEpNumOpt.isSome and localEpNumOpt.get() == bangumiEpNum: 
+    for localFile in originalMatchedLocalFiles:
+      let localEpNumOpt = extractEpisodeNumberFromName(localFile.nameOnly)
+
+      if localEpNumOpt.isSome and localEpNumOpt.get() == bangumiEpNum:
         let lowerExt = localFile.ext.toLower()
         if lowerExt in videoExts:
-          if currentFoundVideo.isNone: 
+          if currentFoundVideo.isNone: # 只取第一个匹配的视频
             currentFoundVideo = some(localFile)
-        elif lowerExt in subtitleExts:
-          if currentFoundSub.isNone: 
-            currentFoundSub = some(localFile)
-      
-      if currentFoundVideo.isSome and currentFoundSub.isSome: 
-        break
+        elif subtitleExts.any(proc(basicExt: string): bool = lowerExt.endsWith(basicExt)): # 检查是否以任一基本字幕后缀结尾
+          currentFoundSubs.add(localFile) # 添加所有匹配的字幕
     
     if currentFoundVideo.isSome: usedByPreciseMatch.incl(currentFoundVideo.get())
-    if currentFoundSub.isSome: usedByPreciseMatch.incl(currentFoundSub.get())
-    preciseMatchResults[ep.sort] = (video: currentFoundVideo, sub: currentFoundSub)
+    for subFile in currentFoundSubs: usedByPreciseMatch.incl(subFile) # 将所有精确匹配的字幕加入已使用集合
+    preciseMatchResults[ep.sort] = (video: currentFoundVideo, subs: currentFoundSubs)
 
-  var remainingVideos = newSeq[LocalFileInfo]()    
-  var remainingSubtitles = newSeq[LocalFileInfo]() 
+  var remainingVideos = newSeq[LocalFileInfo]()
+  var remainingSubtitles = newSeq[LocalFileInfo]()
 
   for fileInfo in originalMatchedLocalFiles: # Renamed 'file' to 'fileInfo' to avoid conflict
-    if fileInfo notin usedByPreciseMatch: 
-      if fileInfo.ext.toLower() in videoExts:
+    if fileInfo notin usedByPreciseMatch:
+      let lowerExt = fileInfo.ext.toLower()
+      if lowerExt in videoExts:
         remainingVideos.add(fileInfo)
-      elif fileInfo.ext.toLower() in subtitleExts:
+      elif subtitleExts.any(proc(basicExt: string): bool = lowerExt.endsWith(basicExt)): # 同样修改这里的判断逻辑
         remainingSubtitles.add(fileInfo)
   
-  remainingVideos.sort(naturalCompare)    
+  remainingVideos.sort(naturalCompare)
   remainingSubtitles.sort(naturalCompare) 
 
   # echo fmt"调试: 精确匹配完成。剩余 {remainingVideos.len} 个视频和 {remainingSubtitles.len} 个字幕待排序匹配。" # 减少默认输出
@@ -236,28 +234,33 @@ proc updateAndSaveJsonCache*(
   var videoSeqIdx = 0 
   var subSeqIdx = 0   
 
-  for ep in bangumiEpisodes.data: 
-    let epKey = formatEpisodeNumber(ep.sort, bangumiEpisodes.total) 
-    var (finalVideoFile, finalSubtitleFile) = preciseMatchResults.getOrDefault(ep.sort) 
+  for ep in bangumiEpisodes.data:
+    let epKey = formatEpisodeNumber(ep.sort, bangumiEpisodes.total)
+    var finalVideoFile = preciseMatchResults.getOrDefault(ep.sort).video
+    var finalSubtitleFiles = preciseMatchResults.getOrDefault(ep.sort).subs
 
     if finalVideoFile.isNone and videoSeqIdx < remainingVideos.len:
       finalVideoFile = some(remainingVideos[videoSeqIdx])
-      videoSeqIdx += 1 
-      # echo fmt"  顺序匹配: Bangumi S{season.id}E{int(ep.sort)} ('{ep.name}') -> 视频 '{finalVideoFile.get().nameOnly}{finalVideoFile.get().ext}'" # 减少默认输出
+      videoSeqIdx += 1
+      # echo fmt"  顺序匹配: Bangumi S{season.id}E{int(ep.sort)} ('{ep.name}') -> 视频 '{finalVideoFile.get().nameOnly}{finalVideoFile.get().ext}'"
     
-    if finalSubtitleFile.isNone and subSeqIdx < remainingSubtitles.len:
-      finalSubtitleFile = some(remainingSubtitles[subSeqIdx])
-      subSeqIdx += 1 
-      # echo fmt"  顺序匹配: Bangumi S{season.id}E{int(ep.sort)} ('{ep.name}') -> 字幕 '{finalSubtitleFile.get().nameOnly}{finalSubtitleFile.get().ext}'" # 减少默认输出
+    # 如果精确匹配没有找到字幕，并且还有剩余字幕，则从剩余字幕中分配一个
+    # 注意：此处的顺序匹配仍然只为每个剧集分配一个“额外”的字幕（如果精确匹配为空）。
+    # 如果希望将所有剩余字幕按顺序分配给没有精确匹配字幕的剧集，逻辑会更复杂。
+    # 目前，如果精确匹配的 finalSubtitleFiles 不为空，则不进行顺序匹配字幕。
+    if finalSubtitleFiles.len == 0 and subSeqIdx < remainingSubtitles.len:
+      finalSubtitleFiles.add(remainingSubtitles[subSeqIdx]) # 添加到序列
+      subSeqIdx += 1
+      # echo fmt"  顺序匹配: Bangumi S{season.id}E{int(ep.sort)} ('{ep.name}') -> 字幕 '{finalSubtitleFiles[^1].nameOnly}{finalSubtitleFiles[^1].ext}'"
 
     episodesForJson[epKey] = CachedEpisodeInfo(
       bangumiSort: ep.sort,
       bangumiName: ep.name,
       localVideoFile: finalVideoFile,
-      localSubtitleFile: finalSubtitleFile
+      localSubtitleFiles: finalSubtitleFiles # 使用修改后的字段
     )
     
-    # var parts: seq[string] # 减少默认输出
+    # var parts: seq[string]
     # var matchedSomething = false
     # if finalVideoFile.isSome:
     #   parts.add("视频: " & finalVideoFile.get().nameOnly & finalVideoFile.get().ext)

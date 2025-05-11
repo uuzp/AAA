@@ -47,7 +47,7 @@ type
     bangumiSort*: float            # Bangumi API 返回的原始 sort 值
     bangumiName*: string           # Bangumi API 返回的剧集名 (优先中文)
     localVideoFile*: Option[LocalFileInfo]
-    localSubtitleFile*: Option[LocalFileInfo]
+    localSubtitleFiles*: seq[LocalFileInfo] # 更改为字幕文件序列
 
   CachedSeasonInfo* = object       ## 存储在 cache.json 中的番剧季度详细信息
     bangumiSeasonId*: int          # Bangumi 番剧 ID
