@@ -59,9 +59,9 @@ proc getApiData*[T](apiUrl: string): Option[T] =
   finally:
     client.close()
 
-proc getSeason*(searchTerm: string): Option[Season] =
+proc getSeason*(searchTerm: string, useCnName: bool = true): Option[Season] =
   ## 根据搜索词从 Bangumi API 获取番剧信息。
-  ## 返回番剧的 ID 和名称 (优先中文名)。
+  ## 返回番剧的 ID 和名称 (根据useCnName决定是否优先使用中文名)。
   let apiUrl = setURL(searchTerm)
   let apiResponseOpt = getApiData[SeasonResponse](apiUrl)
 
@@ -69,13 +69,16 @@ proc getSeason*(searchTerm: string): Option[Season] =
     let apiResponse = apiResponseOpt.get()
     if apiResponse.list.len > 0:
       let firstResult = apiResponse.list[0]
-      let seasonName = if firstResult.name_cn.len > 0: firstResult.name_cn else: firstResult.name
+      let seasonName = if useCnName and firstResult.name_cn.len > 0: 
+                          firstResult.name_cn 
+                       else: 
+                          firstResult.name
       return some(Season(id: firstResult.id, name: seasonName))
   return none(Season)
 
-proc getEpisodes*(id: int): Option[EpisodeList] =
+proc getEpisodes*(id: int, useCnName: bool = true): Option[EpisodeList] =
   ## 根据番剧 ID 从 Bangumi API 获取剧集列表。
-  ## 返回总集数和剧集信息 (名称优先中文名)。
+  ## 返回总集数和剧集信息 (根据useCnName决定是否优先使用中文名)。
   let apiUrl = setURL(id)
   let rawListOpt = getApiData[RawEpisodeList](apiUrl)
 
@@ -83,7 +86,10 @@ proc getEpisodes*(id: int): Option[EpisodeList] =
     let rawList = rawListOpt.get()
     var episodes = newSeq[Episode]()
     for rawEp in rawList.data:
-      let episodeName = if rawEp.name_cn.len > 0: rawEp.name_cn else: rawEp.name
+      let episodeName = if useCnName and rawEp.name_cn.len > 0: 
+                            rawEp.name_cn 
+                        else: 
+                            rawEp.name
       episodes.add(Episode(sort: rawEp.sort, name: episodeName))
     return some(EpisodeList(total: rawList.total, data: episodes))
   return none(EpisodeList)

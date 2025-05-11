@@ -29,7 +29,7 @@ type
 
 # --- 字符串和排序工具函数 (从原 core/utils_string.nim 移动过来) ---
 proc getCleanedBaseName*(name: string): string =
-  ## 从文件名中移除常见的分辨率、编码、发布组等标签，得到一个更“干净”的基础名称。
+  ## 从文件名中移除常见的分辨率、编码、发布组等标签，得到一个更"干净"的基础名称。
   var cleanedName = name
   cleanedName = cleanedName.replace(re"(?i)\b(?:1080p|720p|2160p|4k)\b", "")
   cleanedName = cleanedName.replace(re"(?i)\b(?:x265|h265|x264|h264|avc|hevc)\b", "")
@@ -476,14 +476,23 @@ proc appendToCacheCsv*(originalInputName: string, seasonId: int, seasonName: str
 
 proc readCsvCacheEntries*(filePath: string): Table[string, CsvCacheEntry] =
   ## 从 cache.csv 加载原始文件夹名到 Bangumi Season ID 的映射。
+  ## 忽略文件的第一行，因为它包含程序配置信息。
   result = initTable[string, CsvCacheEntry]()
   if not fileExists(filePath):
     return
+  
+  var isFirstLine = true
   try:
     for line in lines(filePath):
       let strippedLine = line.strip()
+      # 跳过第一行（配置信息）、空行和注释行
+      if isFirstLine:
+        isFirstLine = false
+        continue
+      
       if strippedLine.len == 0 or strippedLine.startsWith("#"):
         continue
+        
       let parts = strippedLine.split(',')
       if parts.len == 3: 
         try:
