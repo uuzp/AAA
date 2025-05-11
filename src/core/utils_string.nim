@@ -1,5 +1,5 @@
 import ./types
-import std/[strutils, options, sequtils] # 添加 sequtils
+import std/[strutils, options, sequtils, re] # 添加 re 模块
 
 proc eqIgnoresCase*(a, b: string): bool =
   ## 不区分大小写比较两个字符串是否相等
@@ -20,6 +20,40 @@ proc stripLeadingZeros*(s: string): string =
     return "0"
   else:
     return s[i .. ^1]
+
+proc getCleanedBaseName*(name: string): string =
+  ## 从文件名中移除常见的分辨率、编码、发布组等标签，得到一个更“干净”的基础名称。
+  ## 注意：这个列表和正则表达式可能需要根据实际情况调整。
+  var cleanedName = name
+
+  # 移除常见的分辨率标签，例如 1080p, 720p, 2160p, 4K (不区分大小写)
+  cleanedName = cleanedName.replace(re"(?i)\b(?:1080p|720p|2160p|4k)\b", "")
+
+  # 移除常见的视频编码标签，例如 x265, h265, x264, h264, avc, hevc (不区分大小写)
+  cleanedName = cleanedName.replace(re"(?i)\b(?:x265|h265|x264|h264|avc|hevc)\b", "")
+
+  # 移除常见的音频编码标签，例如 FLAC, AAC, AC3, DTS, Opus (不区分大小写)
+  cleanedName = cleanedName.replace(re"(?i)\b(?:FLAC|AAC|AC3|DTS|Opus)\b", "")
+  
+  # 移除常见的源标签，例如 BDRip, BluRay, WEB-DL, WEBRip, HDTV (不区分大小写)
+  cleanedName = cleanedName.replace(re"(?i)\b(?:BDRip|BluRay|WEB-DL|WEBRip|HDTV)\b", "")
+
+  # 移除常见的发布组/字幕组标签模式 (这是一个非常简化的示例，实际可能更复杂)
+  # 假设它们经常以 "-" 或 "_" 开头或结尾，或者被方括号包围
+  cleanedName = cleanedName.replace(re"-\w+$", "") # 移除末尾的 -ReleaseGroup
+  cleanedName = cleanedName.replace(re"_\w+$", "") # 移除末尾的 _ReleaseGroup
+  # cleanedName = cleanedName.replace(re"\[[^\]]+\]", "") # 移除方括号内的内容，这个可能过于激进
+
+  # 移除常见的分割符和多余空格，并将多个点替换为单个点
+  cleanedName = cleanedName.replace(re"[\s._-]+", ".") # 将空格、点、下划线、连字符统一替换为单个点
+  cleanedName = cleanedName.strip(chars = {'.'}) # 移除首尾的点
+
+  # 再次清理，移除可能因替换产生的连续点
+  while cleanedName.contains(".."):
+    cleanedName = cleanedName.replace("..", ".")
+
+  return cleanedName.strip()
+
 # --- 自然排序辅助函数 ---
 proc splitAlphaNumeric*(s: string): seq[string] =
   ## 将字符串分割为交替的非数字和数字序列。

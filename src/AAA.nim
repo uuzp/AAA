@@ -253,6 +253,7 @@ proc processSampleData(
         matchedLocalFiles[^1].nameOnly = correctedName
         matchedLocalFiles[^1].ext = correctedExt
         # --- 结束补充修正 ---
+        echo fmt"调试(AAA.processSampleData): 文件 '{item.path}' 解析为 LocalFileInfo: nameOnly='{correctedName}', ext='{correctedExt}'" # DEBUG LOG ADDED
 
         count += 1
     # echo fmt"信息: 在 '{localFilesPath}' 中扫描到 {count} 个文件。"

@@ -271,6 +271,16 @@ proc updateAndSaveJsonCache*(
         # 可选的健壮性检查:
         if episodeNameOnlyOpt.isSome and subFile.nameOnly != episodeNameOnlyOpt.get():
           stderr.writeLine fmt"警告: 番剧 {seasonIdStr} 剧集 {epKey} 的字幕文件 '{subFile.fullPath}' 的 nameOnly ('{subFile.nameOnly}') 与已确定的基础文件名 ('{episodeNameOnlyOpt.get()}') 不一致。"
+      
+      echo fmt"调试(cache_manager.updateAndSaveJsonCache): 为剧集 '{epKey}' (Bangumi: '{ep.name}') 准备填充 CachedEpisodeInfo:" # DEBUG LOG ADDED
+      let videoPathStr = if finalVideoFile.isSome: finalVideoFile.get().fullPath else: "None"
+      echo fmt"  - finalVideoFile: {videoPathStr}" # DEBUG LOG ADDED
+      for i in 0 ..< finalSubtitleFiles.len:
+          let subF = finalSubtitleFiles[i]
+          echo fmt"  - finalSubtitleFile[{i}]: {subF.fullPath}" # DEBUG LOG ADDED
+      echo fmt"  - episodeNameOnlyOpt (待定): {episodeNameOnlyOpt}" # DEBUG LOG ADDED
+      echo fmt"  - episodeVideoExtOpt (待定): {episodeVideoExtOpt}" # DEBUG LOG ADDED
+      echo fmt"  - episodeSubtitleExtsSeq (待定): {episodeSubtitleExtsSeq}" # DEBUG LOG ADDED
 
     episodesForJson[epKey] = CachedEpisodeInfo(
       bangumiSort: ep.sort,

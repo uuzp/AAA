@@ -203,10 +203,25 @@ proc renameFilesBasedOnCache*(
             discard fileDir
             discard extAlso # 这部分应该是空的，或者如果原始文件名更复杂则可能包含内容
             # 精确匹配：如果当前字幕文件的 namePartOfSub (在字幕后缀之前，无视频后缀) 与缓存中的 nameOnly (视频的原始名，无后缀) 相同
-            if logStream != nil: logStream.writeLine(fmt"调试(renameFilesBasedOnCache): 字幕匹配 - 尝试精确匹配 namePartOfSub '{namePartOfSub}' 与 cachedEp.nameOnly '{cachedEp.nameOnly.get(""无nameOnly"")}'") # DEBUG LOG
-            if cachedEp.nameOnly.isSome and namePartOfSub == cachedEp.nameOnly.get():
+            let cachedNameOnlyForCompare = cachedEp.nameOnly.get("无nameOnly缓存值")
+            if logStream != nil: logStream.writeLine(fmt"调试(renameFilesBasedOnCache): 字幕匹配 - 原始比较值:")
+            if logStream != nil: logStream.writeLine(fmt"  - actualFileInDir (原始字幕名): '{actualFileInDir}'")
+            if logStream != nil: logStream.writeLine(fmt"  - subExtExpected (期望后缀): '{subExtExpected}'")
+            if logStream != nil: logStream.writeLine(fmt"  - nameBeforeExpectedSubExt (去除期望后缀后): '{nameBeforeExpectedSubExt}'")
+            if logStream != nil: logStream.writeLine(fmt"  - namePartOfSub (从上面提取的基础名): '{namePartOfSub}'")
+            if logStream != nil: logStream.writeLine(fmt"  - cachedEp.nameOnly (缓存中的基础名): '{cachedNameOnlyForCompare}'")
+
+            # 使用清理后的名称进行比较
+            let cleanNamePartOfSub = getCleanedBaseName(namePartOfSub) # 调用新的清理函数
+            let cleanCachedNameOnly = getCleanedBaseName(cachedNameOnlyForCompare) # 调用新的清理函数
+
+            if logStream != nil: logStream.writeLine(fmt"调试(renameFilesBasedOnCache): 字幕匹配 - 清理后比较值:")
+            if logStream != nil: logStream.writeLine(fmt"  - cleanNamePartOfSub: '{cleanNamePartOfSub}'")
+            if logStream != nil: logStream.writeLine(fmt"  - cleanCachedNameOnly: '{cleanCachedNameOnly}'")
+            
+            if cachedEp.nameOnly.isSome and cleanNamePartOfSub == cleanCachedNameOnly and cleanNamePartOfSub.len > 0: # 确保清理后仍有内容
               oldSubFileOriginalName = some(actualFileInDir)
-              if logStream != nil: logStream.writeLine(fmt"调试(renameFilesBasedOnCache): 字幕匹配 - 找到旧字幕文件: '{actualFileInDir}'") # DEBUG LOG
+              if logStream != nil: logStream.writeLine(fmt"调试(renameFilesBasedOnCache): 字幕匹配 - 找到旧字幕文件: '{actualFileInDir}' (因为 cleanNamePartOfSub == cleanCachedNameOnly)")
               break
         
         if oldSubFileOriginalName.isSome:
