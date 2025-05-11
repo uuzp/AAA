@@ -1,8 +1,0 @@
-#根据字幕组匹配从文件夹提取番剧名
-#放置到程序所在文件夹下的cache/fansub.rules
-VCB-Studio = \]\s*(.*?)\s*\[
-冷番补完字幕组,Nekomoe kissaten = \[.*?\]\[(.*?)\]\[.*?\]
-DBD-Raws = \[[^\]]+?\]\s*\[DBD-Raws\]\s*\[\s*([^/]+?)\s*/[^\]]*?\]
-DBD-Raws = \[\s*DBD-Raws\s*\]\s*\[\s*([^\]]+?)\s*\](?=\[|$)
-#下面是无字幕组名称的特殊情况直接赋值
-Haruhi Suzumiya = Haruhi Suzumiya 2009
