@@ -1,7 +1,38 @@
-import ./types
 import std/[httpclient, json, options, strformat, strutils]
 
-# --- Bangumi API 相关函数 ---
+# --- 类型定义 (从原 types.nim 移动过来) ---
+type
+  Season* = object                   ## Bangumi 番剧季度信息 (API获取后，程序内部使用)
+    id*: int                         # 番剧在 Bangumi 上的 ID
+    name*: string                    # 番剧名称 (优先使用中文名)
+
+  Episode* = object                  ## Bangumi 单集信息 (API获取后，程序内部使用)
+    sort*: float                     # 剧集排序号
+    name*: string                    # 剧集名称 (优先使用中文名)
+
+  EpisodeList* = object              ## Bangumi 剧集列表 (API获取后，程序内部使用)
+    total*: int                      # 总集数
+    data*: seq[Episode]              # 剧集数据序列
+
+  RawEpisode* = object               ## API 返回的原始单集数据结构
+    sort*: float
+    name*: string                    # 原名
+    name_cn*: string                 # 中文名
+
+  RawEpisodeList* = object           ## API 返回的原始剧集列表数据结构
+    total*: int
+    data*: seq[RawEpisode]
+
+  SeasonSearchResult* = object       ## API 搜索番剧结果中的单项数据结构
+    id*: int
+    name*: string                    # 原名
+    name_cn*: string                 # 中文名
+
+  SeasonResponse* = object           ## API 搜索番剧的顶层响应数据结构
+    results*: int                    # 搜索结果数量
+    list*: seq[SeasonSearchResult]   # 搜索结果列表
+
+# --- Bangumi API 相关函数 (从原 core/bangumi_api.nim 移动过来) ---
 func setURL*(k: string): string =
   ## 构建 Bangumi 搜索番剧的 API URL。
   &"http://api.bgm.tv/search/subject/{k}?type=2&responseGroup=small"
@@ -23,7 +54,7 @@ proc getApiData*[T](apiUrl: string): Option[T] =
     let jsonData = parseJson(response)
     result = some(jsonData.to(T))
   except CatchableError as e:
-    echo &"错误: 从 URL {apiUrl} 获取或解析数据失败: {e.msg}" # 保持错误输出，但后续会考虑用 Result 类型
+    echo &"错误: 从 URL {apiUrl} 获取或解析数据失败: {e.msg}"
     result = none(T)
   finally:
     client.close()
