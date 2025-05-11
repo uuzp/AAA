@@ -1,4 +1,4 @@
-import std/[strformat,strutils, tables, os,options, algorithm, sequtils, re, streams, sets, math] # Added math
+import std/[strformat,strutils, tables, os,options, algorithm, sequtils, streams, sets, math] # Removed re
 import ./bangumi_api      # Bangumi API 相关功能
 import ./utils            # 本地文件信息、文件/目录操作、缓存读写、工具函数等
 
@@ -8,50 +8,80 @@ type
     basePath*: string                # 基础路径
     animePath*: string               # 番剧目标路径
 
-  RuleConfig* = object               ## 匹配规则配置
+  RuleConfig* = object               ## 匹配规则配置 (保留定义，但相关函数可能不再使用)
     groups*: seq[string]             # 用于初步筛选的字幕组或关键词列表
     pattern*: string                 # 用于提取番剧名称的正则表达式或普通字符串
 
-  RuleSet* = seq[RuleConfig]         ## 规则配置集合
+  RuleSet* = seq[RuleConfig]         ## 规则配置集合 (保留定义，但相关函数可能不再使用)
 
 # --- 规则匹配相关函数 ---
-proc extractMatch*(s: string, pattern: string): string =
-  ## 使用正则表达式从字符串 s 中提取第一个匹配项。
-  var matches: array[1, string]
-  if s.find(re(pattern), matches) != -1:
-    return matches[0]
-  return ""
+# proc extractMatch*(s: string, pattern: string): string = # 旧的正则提取函数，不再使用
+#   ## 使用正则表达式从字符串 s 中提取第一个匹配项。
+#   var matches: array[1, string]
+#   if s.find(re(pattern), matches) != -1:
+#     return matches[0]
+#   return ""
 
-proc isPlainString*(s: string): bool =
-  ## 检查字符串是否不包含常见的正则表达式元字符。
-  const regexMetaChars = {'[', ']', '(', ')', '{', '}', '?', '*', '+', '|', '^', '$', '.', '\\'}
-  for c in s:
-    if c in regexMetaChars:
-      return false
-  return true
+# proc isPlainString*(s: string): bool = # 旧的辅助函数，不再直接需要
+#   ## 检查字符串是否不包含常见的正则表达式元字符。
+#   const regexMetaChars = {'[', ']', '(', ')', '{', '}', '?', '*', '+', '|', '^', '$', '.', '\\'}
+#   for c in s:
+#     if c in regexMetaChars:
+#       return false
+#   return true
 
-proc matchRule*(title: string, rule: RuleConfig): Option[string] =
-  ## 根据单条规则匹配标题。
-  if not rule.groups.anyIt(it in title):
-    return none(string)
+# proc matchRule*(title: string, rule: RuleConfig): Option[string] = # 旧的规则匹配函数，不再使用
+#   ## 根据单条规则匹配标题。
+#   if not rule.groups.anyIt(it in title):
+#     return none(string)
+#
+#   if isPlainString(rule.pattern):
+#     return some(rule.pattern)
+#
+#   let extracted = extractMatch(title, rule.pattern)
+#   if extracted.len > 0:
+#     return some(extracted)
+#   return none(string)
+proc extractAnimeName(line: string): string =
+  # 检查是否以 [ 开头
+  if line.startsWith("["):
+    # 检查是否为特殊情况：[xxx] name [xxx]
+    let firstCloseBracket = line.find("]")
+    if firstCloseBracket != -1 and firstCloseBracket + 1 < line.len:
+      # 检查后面是否有空格，表示 [xxx] name 格式
+      if line[firstCloseBracket + 1] == ' ':
+        let nextOpenBracket = line.find("[", firstCloseBracket)
+        if nextOpenBracket != -1:
+          result = line[firstCloseBracket + 1 .. nextOpenBracket - 1].strip()
+          return
+
+    # 分割字符串为数组
+    let parts = line.split("]")
+    
+    # 检查第一个部分是否为 [Rev 或 [rev
+    if parts[0].toLowerAscii() == "[rev":
+      # 如果是 Rev 开头，取第三个位置
+      if parts.len > 2:
+        result = parts[2].strip(leading=true, chars={'['})
+    else:
+      # 否则取第二个位置
+      if parts.len > 1:
+        result = parts[1].strip(leading=true, chars={'['})
+  else:
+    # 如果不是以 [ 开头，寻找 _ 前的部分
+    let underscorePos = line.find('_')
+    if underscorePos != -1:
+      result = line[0..<underscorePos]
   
-  if isPlainString(rule.pattern):
-    return some(rule.pattern)
-  
-  let extracted = extractMatch(title, rule.pattern)
-  if extracted.len > 0:
-    return some(extracted)
-  return none(string)
+  # 最后去除可能的前后空格
+  result = result.strip()
 
-proc findMatchingRule*(title: string, rules: RuleSet): string =
-  ## 在规则集中查找第一个与标题匹配的规则，并返回匹配结果。
-  for rule in rules:
-    let optMatched = matchRule(title, rule)
-    if optMatched.isSome:
-      return optMatched.get()
-  return ""
+proc findMatchingRule*(title: string, rules: RuleSet): string = # rules 参数暂时保留，但不再使用
+  ## 使用新的逻辑从文件夹名 (title) 中提取番剧名。
+  ## rules 参数是为了保持函数签名兼容性，但实际已不再使用。
+  return extractAnimeName(title) # 调用新的提取函数
 
-proc loadRules*(filename: string): RuleSet =
+proc loadRules*(filename: string): RuleSet = # 此函数加载的规则不再被 findMatchingRule 使用
   ## 从指定文件加载匹配规则。
   result = @[]
   if not fileExists(filename):
