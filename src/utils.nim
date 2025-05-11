@@ -107,16 +107,33 @@ proc getBaseNameWithoutEpisode*(fileName: string): string =
   ## 例如: "[SubsPlease] Mushishi Zoku Shou - 01 (1080p) [F0ECC044]" -> "[SubsPlease] Mushishi Zoku Shou"
   ## "[DBD-Raws][Mushishi][20.5][1080P]" -> "[DBD-Raws][Mushishi]"
   var baseName = fileName
-  # 移除括号/方括号中的数字和可能的 "v2", "OVA", "SP" 等
-  baseName = baseName.replace(re(r"\s*\[\s*(?:\d+(?:\.\d+)?|SP\d*|OVA\d*|OAD\d*|NCED|NCOP|Preview|PV)\s*\]", {reIgnoreCase}), "")
-  baseName = baseName.replace(re(r"\s*\(\s*(?:\d+(?:\.\d+)?|SP\d*|OVA\d*|OAD\d*|NCED|NCOP|Preview|PV)\s*\)", {reIgnoreCase}), "")
-  # 移除 " - 01", " 01 ", " E01 " 等模式
-  baseName = baseName.replace(re(r"\s*(?:-|E|EP)?\s*\d+(?:\.\d+)?(?:v\d)?(?:\s*-|\s+|$)", {reIgnoreCase}), " ") # 保留一个空格用于后续清理
-  # 移除单独的数字，通常在末尾或被空格包围
-  baseName = baseName.replace(re(r"\b\d+(?:\.\d+)?\b"), "") # 这个通常不需要 reIgnoreCase，但为了统一，可以加上
+  # 移除括号/方括号中的数字和可能的 "v2", "OVA", "SP", "NCED", "NCOP", "Preview", "PV" 等
+  # 这些通常是明确的剧集指示或类型标记，可以先移除
+  baseName = baseName.replace(re(r"\s*\[\s*(?:\d+(?:\.\d+)?v\d?|S\d+E\d+|SP\d*|OVA\d*|OAD\d*|NCED|NCOP|Preview|PV)\s*\]", {reIgnoreCase}), "")
+  baseName = baseName.replace(re(r"\s*\(\s*(?:\d+(?:\.\d+)?v\d?|S\d+E\d+|SP\d*|OVA\d*|OAD\d*|NCED|NCOP|Preview|PV)\s*\)", {reIgnoreCase}), "")
+
+  # 尝试移除更通用的剧集编号模式，例如 " - 01", " E01 ", " S01E01 "
+  # 这个模式需要小心，避免移除文件名中其他部分的数字或 "-TAG"
+  # (?<=\D) 确保数字前是非数字字符或开头，避免移除 x265 中的 265
+  # \s+|$ 确保数字后是空格或行尾
+  baseName = baseName.replace(re(r"(?i)(?:^|\s|\[|\()(?:S\d+E|E|EP|第)?(\d+(?:\.\d+)?)v?\d*(?:END)?(?:$|\s|\]|\))"), " ")
+  
+  # 进一步尝试移除被空格或特定分隔符包围的纯数字集数，这通常在更复杂的命名中
+  # 例如 "... Vol.01 ...", "... 01 ...", "... - 01 - ..."
+  # (?<=[^a-zA-Z0-9]) 确保数字前是非字母数字字符 (lookbehind)
+  # (?=[^a-zA-Z0-9]|$) 确保数字后是非字母数字字符或行尾 (lookahead)
+  baseName = baseName.replace(re(r"(?<=[^a-zA-Z0-9\.]|^)(\d+(?:\.\d+)?)(?=[^a-zA-Z0-9\.]|$)"), "")
+
+
+  # 清理：移除常见标签，这些标签通常在剧集编号之后或独立存在
+  # 将 getCleanedBaseName 中的部分逻辑移到这里，但在移除数字之后进行，以保护标签中的数字
+  baseName = baseName.replace(re("(?i)\\b(?:1080p|720p|2160p|4k|BDRip|BluRay|WEB-DL|WEBRip|HDTV)\\b"), "")
+  baseName = baseName.replace(re("(?i)\\b(?:x265|h265|x264|h264|avc|hevc)\\b"), "")
+  baseName = baseName.replace(re("(?i)\\b(?:FLAC|AAC|AC3|DTS|Opus)\\b"), "")
+  
   # 清理多余的空格和末尾的特殊字符
-  baseName = baseName.replace(re(r"\s+"), " ").strip(chars = {' ', '-', '_', '.'})
-  # 移除末尾可能存在的 " -"
+  baseName = baseName.replace(re(r"\s{2,}"), " ").strip(chars = {' ', '-', '_', '.'})
+  # 移除末尾可能存在的 " -" 或 "_ " 等
   if baseName.endsWith(" -"):
     baseName = baseName[0 .. ^3].strip(chars = {' ', '-', '_', '.'})
   return baseName
@@ -204,35 +221,83 @@ proc createDirectoryHardLinkRecursive*(sourceDir: string, targetDir: string) =
   if linkErrorsCount > 0 or dirCreateErrorsCount > 0:
     stderr.writeLine fmt"硬链接期间发生错误: {linkErrorsCount} 个文件链接失败, {dirCreateErrorsCount} 个目录创建失败。"
 
+proc getCleanSubtitleExtension*(originalFullExt: string): string =
+  ## 从完整的扩展名字符串中提取干净的字幕后缀 (真实后缀 + 可选的语言代码).
+  ## 例如: ".FLAC-CoolFansSub.sc.srt" -> ".sc.srt"
+  ##         ".FLAC-CoolFansSub.srt" -> ".srt"
+  # 已知的基础字幕后缀 (从长到短，避免部分匹配问题，例如 .ssa vs .ass)
+  # 确保它们都以点开头
+  let knownBaseSuffixes = @[".ssa", ".ass", ".srt", ".sub", ".idx", ".vtt"]
+  # 已知的语言代码/地区代码 (通常在基础后缀前，带点)
+  # 也从长到短，例如 .zh-cn vs .cn. 确保它们都以点开头
+  let knownLangCodes = @[
+    ".scjp", ".tcjp", # 简体中文+日语, 繁体中文+日语
+    ".zh-hans", ".zh-hant", ".zh-cn", ".zh-tw", ".zh-hk", # 中文变体
+    ".sc", ".tc", ".chs", ".cht", ".gb", ".big5",        # 更多中文变体
+    ".jpn", ".jp",                                      # 日语
+    ".eng", ".en",                                      # 英语
+    ".ger", ".deu",                                     # 德语
+    ".fre", ".fra",                                     # 法语
+    ".kor", ".ko",                                      # 韩语
+    ".spa", ".es",                                      # 西班牙语
+    ".ita", ".it",                                      # 意大利语
+    ".rus", ".ru"                                       # 俄语
+    # 可以根据需要添加更多
+  ]
+
+  var resultExt = ""
+  var tempExt = originalFullExt # 用于操作的临时变量
+
+  # 1. 提取基础字幕后缀 (从右边开始)
+  for baseSfx in knownBaseSuffixes:
+    if tempExt.toLower().endsWith(baseSfx.toLower()):
+      resultExt = tempExt[^baseSfx.len .. ^1] # 保留原始大小写
+      if tempExt.len > baseSfx.len:
+        tempExt = tempExt[0 .. ^(baseSfx.len + 1)]
+      else:
+        tempExt = "" # 整个字符串就是基础后缀
+      break
+
+  if resultExt.len == 0: # 没有找到已知的基础后缀
+    # 作为回退，取最后一个点之后的部分作为基础后缀
+    let lastDot = originalFullExt.rfind('.')
+    if lastDot != -1:
+      # 确保不是像 ".. ." 这样的情况，只取最后一个点之后的内容
+      if lastDot < originalFullExt.len - 1:
+        return originalFullExt[lastDot .. ^1]
+      else: # 点是最后一个字符，不视为有效后缀
+        return originalFullExt # 或者返回空，表示无法识别
+    else:
+      # 如果连点都没有，说明原始输入可能不是一个正常的扩展名
+      return originalFullExt # 或者返回空字符串，取决于如何处理错误
+
+  # 2. 尝试提取语言代码 (在基础后缀之前的部分 tempExt)
+  var langPart = ""
+  if tempExt.len > 0:
+    for langCode in knownLangCodes:
+      if tempExt.toLower().endsWith(langCode.toLower()):
+        langPart = tempExt[^langCode.len .. ^1] # 保留原始大小写
+        # tempExt = tempExt[0 .. ^(langCode.len + 1)] # 这行可以不要，因为我们通常只取一个最右边的语言代码
+        break # 找到最长/最右匹配的语言代码
+
+  return langPart & resultExt
+
 proc renameFilesBasedOnCache*(
     targetSeasonPath: string,
     seasonInfo: CachedSeasonInfo,
     filesInTargetDir: seq[string] 
   ) =
   ## 根据 seasonInfo 和目标目录中的实际文件列表重命名文件。
-  # Log file writing removed for cleaner output
-  # let logFilePath = targetSeasonPath / "rename_operations.log"
-  # var logStream = newFileStream(logFilePath, fmWrite)
-  # if logStream == nil:
-  #   stderr.writeLine fmt"严重错误: 无法打开日志文件 '{logFilePath}' 进行写入。"
-  #
-  # defer:
-  #   if logStream != nil:
-  #     logStream.close()
 
   if not dirExists(targetSeasonPath):
     stderr.writeLine fmt"错误: 目标番剧文件夹 '{targetSeasonPath}' 不存在，无法重命名。" # Kept stderr for critical errors
     return
 
-  # if logStream != nil: logStream.writeLine(fmt"调试(renameFilesBasedOnCache): 开始处理番剧 '{seasonInfo.bangumiSeasonName}' 于路径 '{targetSeasonPath}'")
   var renamedFilesCount = 0
   var renameErrorsCount = 0
 
   for epKey, cachedEp in pairs(seasonInfo.episodes):
-    # let episodeNameForLog = cachedEp.nameOnly.get("N/A")  # Removed log-specific var
-    # if logStream != nil: logStream.writeLine(fmt"调试(renameFilesBasedOnCache): 处理剧集 '{epKey}', 缓存名称: '{episodeNameForLog}'")
     if cachedEp.nameOnly.isNone:
-      # if logStream != nil: logStream.writeLine(fmt"调试(renameFilesBasedOnCache): 番剧 '{seasonInfo.bangumiSeasonName}', 剧集 '{epKey}' 在缓存中没有基础文件名 (nameOnly)，跳过重命名。" )
       continue
 
     let cleanBangumiEpName = sanitizeFilename(cachedEp.bangumiName) # Uses sanitizeFilename from this module
@@ -246,56 +311,58 @@ proc renameFilesBasedOnCache*(
         var (fileDir, namePart, extPart) = splitFile(actualFileInDir)
         discard fileDir
         if cachedEp.videoExt.isSome and extPart == cachedEp.videoExt.get():
-          # cachedEp.nameOnly now stores the original nameOnly of the matched video file
-          if cachedEp.nameOnly.isSome and namePart == cachedEp.nameOnly.get():
-            oldVideoFileOriginalName = some(actualFileInDir)
-            break
+          # cachedEp.nameOnly stores the (potentially unclean) base name from cache
+          if cachedEp.nameOnly.isSome:
+            let cleanedNamePartFromActualVideo = getCleanedBaseName(namePart)
+            let cleanedCachedNameOnly = getCleanedBaseName(cachedEp.nameOnly.get())
+            if cleanedNamePartFromActualVideo == cleanedCachedNameOnly:
+              oldVideoFileOriginalName = some(actualFileInDir)
+              break
       
       if oldVideoFileOriginalName.isSome:
         let oldVideoName = oldVideoFileOriginalName.get()
         let currentVideoExt = videoExt.get()
-        # if logStream != nil: logStream.writeLine(fmt"调试(renameFilesBasedOnCache): 准备重命名视频 - 旧文件确定为: '{oldVideoName}'")
-        # if logStream != nil: logStream.writeLine(fmt"调试(renameFilesBasedOnCache): PRE-CONSTRUCT VIDEO PATH - targetSeasonPath='{targetSeasonPath}', oldVideoFileOriginalName='{oldVideoName}', newFileNameBasePart='{newFileNameBasePart}', videoExt='{currentVideoExt}'")
         let oldVideoFullPath = targetSeasonPath / oldVideoName
         let newVideoFullName = newFileNameBasePart & currentVideoExt
         let newVideoFullPath = targetSeasonPath / newVideoFullName
-        # if logStream != nil: logStream.writeLine(fmt"调试(renameFilesBasedOnCache): 视频重命名 - 旧路径: '{oldVideoFullPath}', 新路径: '{newVideoFullPath}'")
 
         if oldVideoFullPath != newVideoFullPath:
           if fileExists(oldVideoFullPath):
             try:
               moveFile(oldVideoFullPath, newVideoFullPath)
               renamedFilesCount += 1
-              # if logStream != nil: logStream.writeLine(fmt"调试(renameFilesBasedOnCache): 视频重命名成功: '{oldVideoFullPath}' -> '{newVideoFullPath}'")
             except OSError as e:
               stderr.writeLine fmt"错误: 重命名视频文件 '{oldVideoFullPath}' 到 '{newVideoFullPath}' 失败: {e.msg}" # Kept stderr
-              # if logStream != nil: logStream.writeLine(fmt"调试(renameFilesBasedOnCache): 视频重命名失败: {e.msg}")
               renameErrorsCount += 1
           else:
             stderr.writeLine fmt"警告: 预期的视频文件 '{oldVideoFullPath}' 在尝试重命名时未找到。" # Kept stderr
-            # if logStream != nil: logStream.writeLine(warnMsg) else: stderr.writeLine(warnMsg)
-        # else: # Log removed
-          # if logStream != nil: logStream.writeLine(fmt"信息: 视频文件 '{oldVideoFullPath}' 名称已符合期望格式 '{newVideoFullName}'，无需重命名。" )
-      # else: # Log removed
-        # let expectedExtStr = videoExt.get("N/A")
-        # if logStream != nil: logStream.writeLine(fmt"调试(renameFilesBasedOnCache): 番剧 '{seasonInfo.bangumiSeasonName}', 剧集 '{epKey}': 未能在目标目录中找到匹配的视频文件 (期望后缀: {expectedExtStr})。" )
+        # else: # 名称已符合期望，无需重命名
+      # else: # 未找到原始视频文件
 
     if cachedEp.subtitleExts.len > 0:
       for subExtExpected in cachedEp.subtitleExts:
-        # if logStream != nil: logStream.writeLine(fmt"调试(renameFilesBasedOnCache): 字幕处理 - 剧集 '{epKey}', 期望字幕后缀: '{subExtExpected}'")
         var oldSubFileOriginalName: Option[string] = none(string)
-        for actualFileInDir in filesInTargetDir:
-          if actualFileInDir.endsWith(subExtExpected): # Check if the file has the expected subtitle extension
-            var (fileDir, namePartOfSub, extAlso) = splitFile(actualFileInDir[0 .. ^(subExtExpected.len+1)])
-            discard fileDir
-            discard extAlso # This should be empty if subExtExpected was the full extension part
+        for actualFileInDir_idx, actualFileInDir_val in pairs(filesInTargetDir): # Get index too, corrected iterator
+          let currentActualFile = actualFileInDir_val # Use a new var for clarity
+          if currentActualFile.endsWith(subExtExpected):
+            let namePartOfSub = currentActualFile[0 .. ^(subExtExpected.len+1)]
+            # discard fileDir # No longer needed as we are not using splitFile's dir part
+            # extAlso is the part after namePartOfSub, if any, before subExtExpected was stripped.
+            # We are interested in namePartOfSub as the base to be cleaned.
 
-            # cachedEp.nameOnly stores the original nameOnly of the associated video file (or a primary sub if no video)
-            # We expect the subtitle's original name (before its specific language extension) to match this.
-            if cachedEp.nameOnly.isSome and namePartOfSub == cachedEp.nameOnly.get():
-              oldSubFileOriginalName = some(actualFileInDir)
-              break
+            # Clean the base name extracted from the actual subtitle file
+            let nameOfVideoFromCache = cachedEp.nameOnly.get() # Get it once
+            let cleanedBaseNameFromActualSub = getCleanedBaseName(namePartOfSub)
+            let cleanedCachedNameOnly = getCleanedBaseName(nameOfVideoFromCache)
+
+            if cachedEp.nameOnly.isSome:
+              if cleanedBaseNameFromActualSub == cleanedCachedNameOnly:
+                oldSubFileOriginalName = some(currentActualFile) # 使用 currentActualFile
+              # elif epKey == "E20.5": # 保留此注释以备将来调试，但当前已解决
+                # echo fmt"      E20.5 字幕文件基础名比较失败! (cleanedBaseNameFromActualSub != cleanedCachedNameOnly)"
             # Fallback: if direct nameOnly match fails, compare base names (without episode numbers)
+            # This fallback might also need adjustment if used, to ensure consistent cleaning.
+            # For now, focusing on the primary matching logic.
             # This helps if video is "Show - 01" and sub is "Show - 01.sc"
             # and cachedEp.nameOnly was "Show - 01"
             # but actualFileInDir is "Show - 01.sc.ass" -> namePartOfSub becomes "Show - 01.sc"
@@ -326,35 +393,26 @@ proc renameFilesBasedOnCache*(
         
         if oldSubFileOriginalName.isSome:
           let oldSubName = oldSubFileOriginalName.get()
-          # if logStream != nil: logStream.writeLine(fmt"调试(renameFilesBasedOnCache): 准备重命名字幕 - 旧文件确定为: '{oldSubName}'")
-          # if logStream != nil: logStream.writeLine(fmt"调试(renameFilesBasedOnCache): PRE-CONSTRUCT SUB PATH - targetSeasonPath='{targetSeasonPath}', oldSubFileOriginalName='{oldSubName}', newFileNameBasePart='{newFileNameBasePart}', subExtExpected='{subExtExpected}'")
           let oldSubFullPath = targetSeasonPath / oldSubName
-          let newSubFullName = newFileNameBasePart & subExtExpected
+          let cleanSubExt = getCleanSubtitleExtension(subExtExpected)
+          let newSubFullName = newFileNameBasePart & cleanSubExt
           let newSubFullPath = targetSeasonPath / newSubFullName
-          # if logStream != nil: logStream.writeLine(fmt"调试(renameFilesBasedOnCache): 字幕重命名 - 旧路径: '{oldSubFullPath}', 新路径: '{newSubFullPath}'")
 
           if oldSubFullPath != newSubFullPath:
             if fileExists(oldSubFullPath):
               try:
                 moveFile(oldSubFullPath, newSubFullPath)
                 renamedFilesCount += 1
-                # if logStream != nil: logStream.writeLine(fmt"调试(renameFilesBasedOnCache): 字幕重命名成功: '{oldSubFullPath}' -> '{newSubFullPath}'")
               except OSError as e:
                 stderr.writeLine fmt"错误: 重命名字幕文件 '{oldSubFullPath}' 到 '{newSubFullPath}' 失败: {e.msg}" # Kept stderr
-                # if logStream != nil: logStream.writeLine(fmt"调试(renameFilesBasedOnCache): 字幕重命名失败: {e.msg}")
                 renameErrorsCount += 1
             else:
               stderr.writeLine fmt"警告: 预期的字幕文件 '{oldSubFullPath}' 在尝试重命名时未找到。" # Kept stderr
-              # if logStream != nil: logStream.writeLine(warnMsg) else: stderr.writeLine(warnMsg)
-          # else: # Log removed
-            # if logStream != nil: logStream.writeLine(fmt"信息: 字幕文件 '{oldSubFullPath}' 名称已符合期望格式 '{newSubFullName}'，无需重命名。" )
-        # else: # Log removed
-          # if logStream != nil: logStream.writeLine(fmt"调试(renameFilesBasedOnCache): 番剧 '{seasonInfo.bangumiSeasonName}', 剧集 '{epKey}': 未能在目标目录中找到匹配的字幕文件 (期望后缀: {subExtExpected})。" )
+          # else: # 名称已符合期望，无需重命名
+        # else: # 未找到原始字幕文件
   
-  # if logStream != nil: logStream.writeLine(fmt"番剧 '{seasonInfo.bangumiSeasonName}' 重命名完成。成功: {renamedFilesCount} 个文件, 失败: {renameErrorsCount} 个。" )
   if renameErrorsCount > 0:
     stderr.writeLine fmt"番剧 '{seasonInfo.bangumiSeasonName}' 重命名期间发生 {renameErrorsCount} 个错误。" # Kept stderr
-    # if logStream != nil: logStream.writeLine(errorMsg) else: stderr.writeLine(errorMsg)
 
 # --- 缓存处理相关函数 (从原 core/cache_manager.nim 移动过来) ---
 proc extractEpisodeNumberFromName*(fileName: string): Option[float] =
