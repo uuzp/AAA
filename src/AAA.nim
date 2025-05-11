@@ -199,6 +199,61 @@ proc processSampleData(
           ext: currentExt,
           fullPath: item.path
         ))
+
+        # --- 开始补充修正 LocalFileInfo 的 nameOnly 和 ext ---
+        var correctedName = matchedLocalFiles[^1].nameOnly
+        var correctedExt = matchedLocalFiles[^1].ext
+        var needsCorrection = false
+
+        # 检查是否是字幕文件，并且 ext 看起来比基本后缀更复杂
+        let lowerCorrectedExt = correctedExt.toLower() # 转为小写以便进行不区分大小写的比较
+        for basicSubExt in subtitleExts:
+            if lowerCorrectedExt.endsWith(basicSubExt.toLower()) and correctedExt.len > basicSubExt.len:
+                needsCorrection = true
+                break
+        
+        if needsCorrection:
+            var actualExtPart = "" # 存储最终识别的纯扩展名，如 .srt, .sc.ass
+            var namePrefixToRejoin = "" # 存储从复杂 ext 中剥离出来应合并回 nameOnly 的部分
+
+            # 从后向前尝试匹配多部分字幕后缀的可能性
+            # 优先级：.lang.basicExt (e.g. .sc.ass), then .basicExt (e.g. .srt)
+            var matchedMultiPart = false
+            for basicExt in subtitleExts: # .ass, .srt
+                # 尝试匹配 .lang.basicExt
+                # 这里的语言代码列表可以更完善
+                let knownLangCodesForExt = @["sc", "tc", "jp", "eng", "chs", "cht", "gb", "big5", "scjp", "tcjp", "ger", "spa", "fre", "kor", "rus", "ita", "swe", "dan", "nor", "fin", "pol", "tur", "por", "ara", "hin", "vie", "tha", "ind", "may", "dut"]
+                for langCode in knownLangCodesForExt:
+                    let multiPartExt = "." & langCode & basicExt
+                    if lowerCorrectedExt.endsWith(multiPartExt.toLower()):
+                        actualExtPart = multiPartExt # 保留原始大小写的 multiPartExt
+                        namePrefixToRejoin = correctedExt[0 .. ^(multiPartExt.len + 1)]
+                        matchedMultiPart = true
+                        break
+                if matchedMultiPart: break
+            
+            if not matchedMultiPart:
+                # 如果没有匹配到 .lang.basicExt，则只匹配 .basicExt
+                for basicExt in subtitleExts:
+                    if lowerCorrectedExt.endsWith(basicExt.toLower()):
+                        actualExtPart = basicExt # 保留原始大小写的 basicExt
+                        namePrefixToRejoin = correctedExt[0 .. ^(basicExt.len + 1)]
+                        break
+            
+            if actualExtPart.len > 0: # 如果成功识别了扩展名部分
+                correctedExt = actualExtPart
+                if namePrefixToRejoin.len > 0:
+                    correctedName = correctedName & namePrefixToRejoin
+            # else: 扩展名部分无法按预期解析，保留原始 currentExt (可能已经是正确的，如 .mkv)
+        
+        # 清理 correctedName 末尾可能因拼接产生的点
+        if correctedName.endsWith("."):
+            correctedName = correctedName[0 .. ^2]
+
+        matchedLocalFiles[^1].nameOnly = correctedName
+        matchedLocalFiles[^1].ext = correctedExt
+        # --- 结束补充修正 ---
+
         count += 1
     # echo fmt"信息: 在 '{localFilesPath}' 中扫描到 {count} 个文件。"
   else:
@@ -259,7 +314,14 @@ if useCache:
         if finalJsonCacheForRename.hasKey(seasonIdStr):
           let seasonInfo = finalJsonCacheForRename[seasonIdStr]
           # echo fmt"  步骤 2: 重命名 '{targetSeasonDirForLinkAndRename}' 中的文件 (基于番剧: {seasonInfo.bangumiSeasonName})" # 减少输出
-          renameFilesBasedOnCache(targetSeasonDirForLinkAndRename, seasonInfo, originalFolderNameInBase)
+          
+          var filesInLinkedDir: seq[string] = @[]
+          if dirExists(targetSeasonDirForLinkAndRename):
+            for itemEntry in walkDir(targetSeasonDirForLinkAndRename):
+              if itemEntry.kind == pcFile:
+                filesInLinkedDir.add(itemEntry.path.extractFilename())
+          
+          renameFilesBasedOnCache(targetSeasonDirForLinkAndRename, seasonInfo, filesInLinkedDir)
           
           # 诊断日志开始
           let desiredSeasonFolderName = sanitizeFilename(seasonInfo.bangumiSeasonName)

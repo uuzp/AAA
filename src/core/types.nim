@@ -43,11 +43,13 @@ type
     ext*: string                   # 文件后缀 (例如 ".mkv", ".ass", 带点)
     fullPath*: string              # 文件的完整路径
 
-  CachedEpisodeInfo* = object      ## 存储在 cache.json 中的单集详细信息
+  CachedEpisodeInfo* = object      ## 存储在 cache.json 中的单集详细信息 (优化结构)
     bangumiSort*: float            # Bangumi API 返回的原始 sort 值
     bangumiName*: string           # Bangumi API 返回的剧集名 (优先中文)
-    localVideoFile*: Option[LocalFileInfo]
-    localSubtitleFiles*: seq[LocalFileInfo] # 更改为字幕文件序列
+    nameOnly*: Option[string]      # 共享的文件名主体 (不含任何后缀或语言代码), 例如 "Episode 01 - Title"
+                                   # 如果一集只有视频或只有字幕，这也是它们共同的基础名
+    videoExt*: Option[string]      # 视频文件后缀 (例如 ".mkv"), 带点
+    subtitleExts*: seq[string]     # 字幕文件后缀列表 (例如 @[".scjp.ass", ".tcjp.ass"]), 每个都带点
 
   CachedSeasonInfo* = object       ## 存储在 cache.json 中的番剧季度详细信息
     bangumiSeasonId*: int          # Bangumi 番剧 ID

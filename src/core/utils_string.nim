@@ -5,6 +5,21 @@ proc eqIgnoresCase*(a, b: string): bool =
   ## 不区分大小写比较两个字符串是否相等
   return cmpIgnoreCase(a, b) == 0
 
+proc stripLeadingZeros*(s: string): string =
+  ## 移除字符串开头的所有 '0' 字符。
+  ## 如果字符串全是 '0'，则返回 "0"。
+  ## 如果字符串为空或不以 '0' 开头，则返回原字符串。
+  if s.len == 0 or s[0] != '0':
+    return s
+  
+  var i = 0
+  while i < s.len and s[i] == '0':
+    inc i
+  
+  if i == s.len: # 字符串全是 '0'
+    return "0"
+  else:
+    return s[i .. ^1]
 # --- 自然排序辅助函数 ---
 proc splitAlphaNumeric*(s: string): seq[string] =
   ## 将字符串分割为交替的非数字和数字序列。

@@ -253,11 +253,31 @@ proc updateAndSaveJsonCache*(
       subSeqIdx += 1
       # echo fmt"  顺序匹配: Bangumi S{season.id}E{int(ep.sort)} ('{ep.name}') -> 字幕 '{finalSubtitleFiles[^1].nameOnly}{finalSubtitleFiles[^1].ext}'"
 
+    var episodeNameOnlyOpt: Option[string] = none[string]()
+    var episodeVideoExtOpt: Option[string] = none[string]()
+    var episodeSubtitleExtsSeq: seq[string] = @[]
+
+    if finalVideoFile.isSome:
+      let videoInfo = finalVideoFile.get()
+      episodeNameOnlyOpt = some(videoInfo.nameOnly) # 视频的 nameOnly 作为基准
+      episodeVideoExtOpt = some(videoInfo.ext)
+    
+    if finalSubtitleFiles.len > 0:
+      if episodeNameOnlyOpt.isNone: # 如果没有视频文件，则以第一个字幕文件的 nameOnly 为基准
+        episodeNameOnlyOpt = some(finalSubtitleFiles[0].nameOnly)
+      
+      for subFile in finalSubtitleFiles:
+        episodeSubtitleExtsSeq.add(subFile.ext)
+        # 可选的健壮性检查:
+        if episodeNameOnlyOpt.isSome and subFile.nameOnly != episodeNameOnlyOpt.get():
+          stderr.writeLine fmt"警告: 番剧 {seasonIdStr} 剧集 {epKey} 的字幕文件 '{subFile.fullPath}' 的 nameOnly ('{subFile.nameOnly}') 与已确定的基础文件名 ('{episodeNameOnlyOpt.get()}') 不一致。"
+
     episodesForJson[epKey] = CachedEpisodeInfo(
       bangumiSort: ep.sort,
       bangumiName: ep.name,
-      localVideoFile: finalVideoFile,
-      localSubtitleFiles: finalSubtitleFiles # 使用修改后的字段
+      nameOnly: episodeNameOnlyOpt,
+      videoExt: episodeVideoExtOpt,
+      subtitleExts: episodeSubtitleExtsSeq
     )
     
     # var parts: seq[string]
