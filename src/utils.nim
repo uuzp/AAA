@@ -1,42 +1,30 @@
-import std/[os, strutils, strformat, re, tables, options, json, algorithm, sequtils, math, times] # Removed sets, streams, Added math and times
+import std/[os, strutils, strformat, re, tables, options, json, algorithm, sequtils, math, times, sets] # 添加 sets 模块
 import std/collections/tables as ctables # 单独导入collections/tables以避免命名冲突
+import ./bangumi_api # 添加bangumi_api模块的导入
 # import ./core/types # Types will be defined locally or imported from other new modules
 
 # --- 字幕常量和类型定义 (移到前面) ---
 const 
   # 已知的基础字幕扩展名
   knownBaseSuffixes* = @[".ssa", ".ass", ".srt", ".sub", ".idx", ".vtt"]
-  
-  # 复合语言代码列表
-  compoundLangCodes* = @[".scjp", ".tcjp", ".sccn", ".tccn"]
-  
-  # 其他语言代码列表
-  simpleLangCodes* = @[
-    ".zh-hans", ".zh-hant", ".zh-cn", ".zh-tw", ".zh-hk",
-    ".sc", ".tc", ".chs", ".cht", ".gb", ".big5",
-    ".jpn", ".jp", ".eng", ".en", ".ger", ".deu",
-    ".fre", ".fra", ".kor", ".ko", ".spa", ".es",
-    ".ita", ".it", ".rus", ".ru"
-  ]
-
-type
-  SubtitleInfo* = object          ## 字幕文件信息
-    rawExt*: string               # 原始完整扩展名 (如 ".FLAC-CoolFansSub.scjp.ass")
-    suffix*: string               # 字幕后缀部分 (如 ".scjp.ass")
-    baseExt*: string              # 基础扩展名 (如 ".ass")
-    isCompound*: bool             # 是否为复合语言字幕
 
 # --- 字幕文件检测函数 ---
 proc isSubtitleFile*(filename: string): bool =
   ## 判断一个文件是否为字幕文件
   let (_, _, ext) = splitFile(filename)  # 使用splitFile而不是splitExt
-  for base in knownBaseSuffixes:
-    if ext.toLower().endsWith(base.toLower()):
+  for suffix in knownBaseSuffixes:
+    if ext.toLower().endsWith(suffix.toLower()):
       return true
   return false
 
 # --- 类型定义 ---
 type
+  SubtitleInfo* = object
+    rawExt*: string      # 原始完整扩展名
+    suffix*: string      # 字幕后缀部分
+    baseExt*: string     # 基础扩展名
+    isCompound*: bool    # 是否为复合语言字幕
+
   LocalFileInfo* = object          ## 本地文件信息
     nameOnly*: string              # 文件名 (不含后缀)
     ext*: string                   # 文件后缀 (例如 ".mkv", ".ass", 带点)
@@ -352,7 +340,7 @@ proc parseSubtitleExtension*(fullExt: string, videoBaseName: string = ""): Subti
     else:
       result.baseExt = fullExt
   
-  # 设置复合标志
+  # 设置复合标志 - 简单判断：含有多个点号即为复合
   result.isCompound = fullExt.count('.') > 1
   
   # 处理字幕后缀
@@ -363,7 +351,7 @@ proc parseSubtitleExtension*(fullExt: string, videoBaseName: string = ""): Subti
     result.suffix = fullExt
 
 proc isCompoundSubtitle*(filename: string): bool =
-  # 判断是否为复合语言代码字幕文件
+  # 判断是否为包含多个点号的字幕文件
   if not isSubtitleFile(filename):
     return false
   
@@ -743,3 +731,342 @@ proc getCleanSubtitleExtension*(fullExt: string, videoBaseName: string = ""): st
   # 向后兼容的字幕扩展名处理函数
   let subInfo = parseSubtitleExtension(fullExt, videoBaseName)
   return subInfo.suffix
+
+# --- 从AAA.nim移动的函数 ---
+
+proc similarityScore(a, b: string): float =
+  ## 计算两个字符串的相似度（0-1，1为完全相同）
+  if a.len == 0 or b.len == 0:
+    return 0.0
+  
+  # 将字符串转换为小写以忽略大小写差异
+  let strA = a.toLowerAscii()
+  let strB = b.toLowerAscii()
+  
+  # 计算最长公共子序列长度
+  var lcs = 0
+  var i, j = 0
+  while i < strA.len and j < strB.len:
+    if strA[i] == strB[j]:
+      inc lcs
+      inc i
+      inc j
+    elif strA.len - i > strB.len - j:
+      inc i
+    else:
+      inc j
+  
+  # 返回相似度得分
+  return lcs.float / max(strA.len, strB.len).float
+
+proc matchSubtitleToVideo(videoName, subtitleName: string): bool =
+  # 匹配视频和字幕文件
+  let videoBase = getBaseNameWithoutEpisode(videoName)
+  let subBase = getBaseNameWithoutEpisode(subtitleName)
+  
+  logDebug(fmt"匹配字幕: 视频='{videoBase}', 字幕='{subBase}'")
+  
+  # 计算相似度
+  let similarity = similarityScore(videoBase, subBase)
+  logDebug(fmt"相似度: {similarity}")
+  
+  # 统一使用0.7作为阈值
+  return similarity > 0.7
+
+proc renameSubtitleToMatchVideo(dirPath: string, videoFile, subFile: LocalFileInfo): string =
+  ## 重命名字幕文件以匹配视频文件的命名模式
+  ## 返回新的文件名（不包含路径）
+  let videoNameOnly = videoFile.nameOnly
+  
+  # 使用utils中的递归函数获取字幕后缀
+  let subExt = getSubtitleSuffix(subFile.fullPath, videoNameOnly)
+  
+  # 生成新的字幕文件名，保留完整后缀（含语言标记）
+  let newSubName = videoNameOnly & subExt
+  logDebug(fmt"生成新字幕文件名: '{newSubName}'，保留原后缀: '{subExt}'")
+  return newSubName
+
+proc processEpisodeFiles(
+    dirPath: string, 
+    epNumber: float, 
+    videoFile: Option[LocalFileInfo], 
+    subtitleFiles: seq[LocalFileInfo]
+  ) =
+  ## 处理同一集数的所有相关文件（视频+字幕）
+  if videoFile.isNone or subtitleFiles.len == 0:
+    return
+  
+  let video = videoFile.get()
+  logDebug(fmt"处理剧集文件: 集数={epNumber}, 视频文件='{video.fullPath}', 字幕文件数量={subtitleFiles.len}")
+  
+  for sub in subtitleFiles:
+    logDebug(fmt"处理字幕: 名称='{sub.nameOnly}', 扩展名='{sub.ext}', 完整路径='{sub.fullPath}'")
+    
+    # 检查原始字幕文件是否存在
+    if not fileExists(sub.fullPath):
+      logDebug(fmt"字幕文件不存在: '{sub.fullPath}'")
+      continue
+    
+    # 检查字幕与视频是否匹配
+    if matchSubtitleToVideo(video.nameOnly, sub.nameOnly):
+      # 生成新文件名
+      let newSubName = renameSubtitleToMatchVideo(dirPath, video, sub)
+      let oldPath = sub.fullPath
+      let newPath = dirPath / newSubName
+      
+      logDebug(fmt"尝试重命名: '{oldPath}' -> '{newPath}'")
+      
+      # 执行重命名
+      if oldPath != newPath:
+        try:
+          moveFile(oldPath, newPath)
+          logDebug(fmt"重命名成功: '{oldPath}' -> '{newPath}'")
+        except OSError as e:
+          stderr.writeLine fmt"错误: 重命名字幕文件失败: {oldPath} -> {newPath}, 原因: {e.msg}"
+          logDebug(fmt"重命名失败: '{oldPath}' -> '{newPath}', 错误: {e.msg}")
+    else:
+      logDebug(fmt"字幕与视频不匹配，跳过: '{sub.fullPath}'")
+
+proc extractAnimeName_old*(line: string): string = # 设为导出，因为 processSampleData 会间接调用
+  ## 从文件夹名 (line) 中提取番剧名。
+  var extractedName = "" # 使用局部变量以避免与 proc 名冲突
+  # 检查是否以 [ 开头
+  if line.startsWith("["):
+    # 检查是否为特殊情况：[xxx] name [xxx]
+    let firstCloseBracket = line.find("]")
+    if firstCloseBracket != -1 and firstCloseBracket + 1 < line.len:
+      # 检查后面是否有空格，表示 [xxx] name 格式
+      if line[firstCloseBracket + 1] == ' ':
+        let nextOpenBracket = line.find("[", firstCloseBracket)
+        if nextOpenBracket != -1:
+          extractedName = line[firstCloseBracket + 1 .. nextOpenBracket - 1].strip()
+          return extractedName # 直接返回
+
+    # 分割字符串为数组
+    let parts = line.split("]")
+    
+    # 检查第一个部分是否为 [Rev 或 [rev
+    if parts[0].toLowerAscii() == "[rev":
+      # 如果是 Rev 开头，取第三个位置
+      if parts.len > 2:
+        extractedName = parts[2].strip(leading=true, chars={'['})
+    else:
+      # 否则取第二个位置
+      if parts.len > 1:
+        extractedName = parts[1].strip(leading=true, chars={'['})
+  else:
+    # 如果不是以 [ 开头，寻找 _ 前的部分
+    let underscorePos = line.find('_')
+    if underscorePos != -1:
+      extractedName = line[0..<underscorePos]
+  
+  # 最后去除可能的前后空格
+  return extractedName.strip()
+
+proc extractAnimeName*(line: string): string =
+  ## 从文件夹名 (line) 中提取番剧名。
+  # 首先判断是否包含rev，决定取第几个部分
+  let hasRev = line.toLowerAscii().contains("rev")
+  let targetIndex = if hasRev: 3 else: 2
+  
+  # 判断是否以[开头
+  if line.startsWith("["):
+    # 按[和]分割字符串，并去除空字符串
+    let parts = line.split({'[', ']'}).filterIt(it.len > 0)
+    return parts[targetIndex-1].strip()
+  else:
+    # 如果不是以[开头，取_前面的部分
+    let underscorePos = line.find('_')
+    if underscorePos != -1:
+      return line[0..<underscorePos].strip()
+  
+  # 如果没有匹配到任何模式，返回空字符串
+  return ""
+
+proc matchFilesToEpisodes(
+    episodes: seq[bangumi_api.Episode],
+    localFiles: seq[LocalFileInfo],
+    videoExts: seq[string],
+    subtitleExts: seq[string]
+  ): tuple[matchedFiles: Table[float, tuple[video: Option[LocalFileInfo], subs: seq[LocalFileInfo]]], usedFiles: HashSet[LocalFileInfo]] =
+  ## 将本地文件匹配到剧集
+  result.matchedFiles = initTable[float, tuple[video: Option[LocalFileInfo], subs: seq[LocalFileInfo]]]()
+  result.usedFiles = initHashSet[LocalFileInfo]()
+  
+  # 初始化匹配表
+  for ep in episodes:
+    result.matchedFiles[ep.sort] = (video: none[LocalFileInfo](), subs: @[])
+  
+  # 第一轮：匹配整数集数(>=1)
+  for ep in episodes:
+    if abs(ep.sort - round(ep.sort)) < 0.001 and ep.sort >= 1.0:
+      let epNum = ep.sort
+      for file in localFiles:
+        if file notin result.usedFiles:
+          let fileEpOpt = extractEpisodeNumber(file.nameOnly)
+          if fileEpOpt.isSome and abs(fileEpOpt.get() - epNum) < 0.001:
+            let ext = file.ext.toLower()
+            if ext in videoExts:
+              if result.matchedFiles[epNum].video.isNone:
+                result.matchedFiles[epNum].video = some(file)
+                result.usedFiles.incl(file)
+            elif subtitleExts.anyIt(ext.endsWith(it)):
+              result.matchedFiles[epNum].subs.add(file)
+              result.usedFiles.incl(file)
+  
+  # 第二轮：匹配小数集数或特殊集数(0, 0.5等)
+  for ep in episodes:
+    let isFloat = abs(ep.sort - round(ep.sort)) >= 0.001
+    let isSpecial = ep.sort == 0.0
+    
+    if isFloat or isSpecial:
+      let epNum = ep.sort
+      for file in localFiles:
+        if file notin result.usedFiles:
+          let fileEpOpt = extractEpisodeNumber(file.nameOnly)
+          if fileEpOpt.isSome and abs(fileEpOpt.get() - epNum) < 0.001:
+            let ext = file.ext.toLower()
+            if ext in videoExts:
+              if result.matchedFiles[epNum].video.isNone:
+                result.matchedFiles[epNum].video = some(file)
+                result.usedFiles.incl(file)
+            elif subtitleExts.anyIt(ext.endsWith(it)):
+              if not result.matchedFiles[epNum].subs.anyIt(it.fullPath == file.fullPath):
+                result.matchedFiles[epNum].subs.add(file)
+                result.usedFiles.incl(file)
+  
+  return result
+
+proc assignRemainingFiles(
+    matchedFiles: var Table[float, tuple[video: Option[LocalFileInfo], subs: seq[LocalFileInfo]]],
+    usedFiles: var HashSet[LocalFileInfo],
+    remainingVideos: seq[LocalFileInfo],
+    remainingSubs: seq[LocalFileInfo],
+    episodes: seq[bangumi_api.Episode]
+  ) =
+  ## 分配剩余的文件
+  var videoIdx, subIdx = 0
+  
+  # 按排序顺序遍历剧集
+  var sortedEps = episodes
+  sortedEps.sort(proc(a,b: bangumi_api.Episode): int = cmp(a.sort, b.sort))
+  
+  for ep in sortedEps:
+    var match = matchedFiles.getOrDefault(ep.sort)
+    
+    # 分配视频
+    if match.video.isNone and videoIdx < remainingVideos.len:
+      match.video = some(remainingVideos[videoIdx])
+      usedFiles.incl(remainingVideos[videoIdx])
+      videoIdx += 1
+    
+    # 分配字幕
+    if match.subs.len == 0 and subIdx < remainingSubs.len:
+      # 启发式匹配：如果有视频，尝试匹配文件名
+      var assigned = false
+      if match.video.isSome and subIdx < remainingSubs.len:
+        let videoBase = getBaseNameWithoutEpisode(match.video.get().nameOnly)
+        let subBase = getBaseNameWithoutEpisode(remainingSubs[subIdx].nameOnly)
+        if videoBase == subBase:
+          match.subs.add(remainingSubs[subIdx])
+          usedFiles.incl(remainingSubs[subIdx])
+          subIdx += 1
+          assigned = true
+      
+      # 如果没有匹配到，直接分配下一个
+      if not assigned and subIdx < remainingSubs.len:
+        match.subs.add(remainingSubs[subIdx])
+        usedFiles.incl(remainingSubs[subIdx])
+        subIdx += 1
+    
+    matchedFiles[ep.sort] = match
+
+proc buildEpisodeCache(
+    matchedFiles: Table[float, tuple[video: Option[LocalFileInfo], subs: seq[LocalFileInfo]]],
+    episodes: seq[bangumi_api.Episode],
+    totalEpisodes: int
+  ): Table[string, CachedEpisodeInfo] =
+  ## 构建剧集缓存信息
+  result = initTable[string, CachedEpisodeInfo]()
+  
+  for ep in episodes:
+    let epKey = formatEpisodeNumber(ep.sort, totalEpisodes)
+    let files = matchedFiles.getOrDefault(ep.sort)
+    
+    var nameOpt: Option[string] = none[string]()
+    var videoExtOpt: Option[string] = none[string]()
+    var subExts: seq[string] = @[]
+    
+    # 记录文件名
+    if files.video.isSome:
+      let video = files.video.get()
+      nameOpt = some(video.nameOnly)
+      videoExtOpt = some(video.ext)
+    elif files.subs.len > 0:
+      nameOpt = some(files.subs[0].nameOnly)
+    
+    # 记录字幕扩展名
+    if files.subs.len > 0:
+      let baseNameOpt = if files.video.isSome:
+                         some(getBaseNameWithoutEpisode(files.video.get().nameOnly))
+                       elif files.subs.len > 0:
+                         some(getBaseNameWithoutEpisode(files.subs[0].nameOnly))
+                       else:
+                         none[string]()
+      
+      for sub in files.subs:
+        let origExt = sub.ext
+        let videoBase = if files.video.isSome: files.video.get().nameOnly else: ""
+        let cleanExt = getSubtitleSuffix(sub.nameOnly, videoBase)
+        
+        logDebug(fmt"字幕扩展名: 原始='{origExt}', 清理后='{cleanExt}'")
+        subExts.add(cleanExt)
+    
+    # 添加到结果
+    result[epKey] = CachedEpisodeInfo(
+      bangumiSort: ep.sort,
+      bangumiName: ep.name,
+      nameOnly: nameOpt,
+      videoExt: videoExtOpt,
+      subtitleExts: subExts
+    )
+
+proc updateCache*(
+    cache: var Table[string, CachedSeasonInfo],
+    season: bangumi_api.Season,
+    episodes: bangumi_api.EpisodeList,
+    localFiles: seq[LocalFileInfo],
+    videoExts: seq[string],
+    subtitleExts: seq[string],
+    sourceDir: string
+  ) =
+  ## 更新并保存番剧缓存信息
+  let seasonId = $season.id
+  
+  # 匹配文件到剧集
+  let (matchedFiles, usedFiles) = matchFilesToEpisodes(episodes.data, localFiles, videoExts, subtitleExts)
+  
+  # 处理剩余文件
+  var remainingVideos = localFiles.filter(proc (f: LocalFileInfo): bool =
+    f.ext.toLower() in videoExts and f notin usedFiles)
+  var remainingSubs = localFiles.filter(proc (f: LocalFileInfo): bool =
+    subtitleExts.anyIt(f.ext.toLower().endsWith(it)) and f notin usedFiles)
+  
+  remainingVideos.sort(naturalCompare)
+  remainingSubs.sort(naturalCompare)
+  
+  # 分配剩余文件
+  var mutableMatchedFiles = matchedFiles
+  var mutableUsedFiles = usedFiles
+  assignRemainingFiles(mutableMatchedFiles, mutableUsedFiles, remainingVideos, remainingSubs, episodes.data)
+  
+  # 构建缓存
+  let episodesForJson = buildEpisodeCache(mutableMatchedFiles, episodes.data, episodes.total)
+  
+  # 更新缓存
+  cache[seasonId] = CachedSeasonInfo(
+    bangumiSeasonId: season.id,
+    bangumiSeasonName: season.name,
+    totalBangumiEpisodes: episodes.total,
+    episodes: episodesForJson
+  )
