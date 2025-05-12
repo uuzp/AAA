@@ -1,7 +1,7 @@
-import std/[strformat,strutils, tables, os,options, algorithm, sequtils, streams, sets, math, times]
-import ./bangumi_api      # Bangumi API 相关功能
-import ./utils except logDebug # 避免命名冲突
-from ./utils import logDebug  # 显式导入logDebug
+import std/[strformat, strutils, tables, os, options, algorithm, sequtils, sets, math, times]
+import ./bangumi_api
+import ./utils except logDebug
+from ./utils import logDebug
 # import ./test except main # extractAnimeName 已内联，不再需要导入
 
 # --- 类型定义 ---
@@ -192,633 +192,597 @@ proc extractAnimeName*(line: string): string = # 设为导出，因为 processSa
 
 # 全局变量和常量定义
 var
-  base_path_str: string    # 基础路径字符串，用于存放待处理的番剧文件夹
-  anime_path_str: string   # 番剧目标路径字符串
-  use_name_cn: bool = true # 是否使用中文名，默认为true
+  basePath: string    # 基础路径
+  animePath: string   # 番剧目标路径
+  useCnName: bool = true  # 是否使用中文名
 
 # --- 缓存更新函数 ---
-proc updateAndSaveJsonCache*(
-    jsonCacheToUpdate: var Table[string, utils.CachedSeasonInfo],
+proc updateCache*(
+    cache: var Table[string, utils.CachedSeasonInfo],
     season: bangumi_api.Season,
-    bangumiEpisodes: bangumi_api.EpisodeList,
-    originalMatchedLocalFiles: seq[utils.LocalFileInfo],
+    episodes: bangumi_api.EpisodeList,
+    localFiles: seq[utils.LocalFileInfo],
     videoExts: seq[string],
     subtitleExts: seq[string],
-    sourceDir: string  # 添加源目录参数
+    sourceDir: string
   ) =
-  let seasonIdStr = $season.id
+  # 更新并保存番剧缓存信息
+  let seasonId = $season.id
   var episodesForJson = initTable[string, utils.CachedEpisodeInfo]()
-  var usedLocalFiles = initHashSet[utils.LocalFileInfo]()
-  var matchedEpisodeFiles = initTable[float, tuple[video: Option[utils.LocalFileInfo], subs: seq[utils.LocalFileInfo]]]()
+  var usedFiles = initHashSet[utils.LocalFileInfo]()
+  var matchedFiles = initTable[float, tuple[video: Option[utils.LocalFileInfo], subs: seq[utils.LocalFileInfo]]]()
 
-  # Initialize matchedEpisodeFiles for all bangumi episodes
-  for ep in bangumiEpisodes.data:
-    matchedEpisodeFiles[ep.sort] = (video: none[utils.LocalFileInfo](), subs: newSeq[utils.LocalFileInfo]())
+  # 初始化匹配表
+  for ep in episodes.data:
+    matchedFiles[ep.sort] = (video: none[utils.LocalFileInfo](), subs: @[])
 
-  # Pass 1: Match Integer Episodes (>= 1)
-  for ep in bangumiEpisodes.data:
-    if abs(ep.sort - round(ep.sort)) < 0.001 and ep.sort >= 1.0: # Check if it's an integer >= 1
-      let bangumiEpNum = ep.sort
-      for localFile in originalMatchedLocalFiles:
-        if localFile notin usedLocalFiles:
-          let localEpNumOpt = utils.extractEpisodeNumberFromName(localFile.nameOnly) # Returns Option[float]
-          if localEpNumOpt.isSome and abs(localEpNumOpt.get() - bangumiEpNum) < 0.001: # .get() is float, bangumiEpNum is float
-            let lowerExt = localFile.ext.toLower()
-            if lowerExt in videoExts:
-              if matchedEpisodeFiles[bangumiEpNum].video.isNone:
-                matchedEpisodeFiles[bangumiEpNum].video = some(localFile)
-                usedLocalFiles.incl(localFile)
-            elif subtitleExts.anyIt(lowerExt.endsWith(it)):
-              matchedEpisodeFiles[bangumiEpNum].subs.add(localFile)
-              usedLocalFiles.incl(localFile)
+  # 第一轮：匹配整数集数(>=1)
+  for ep in episodes.data:
+    if abs(ep.sort - round(ep.sort)) < 0.001 and ep.sort >= 1.0:
+      let epNum = ep.sort
+      for file in localFiles:
+        if file notin usedFiles:
+          let fileEpOpt = utils.extractEpisodeNumber(file.nameOnly)
+          if fileEpOpt.isSome and abs(fileEpOpt.get() - epNum) < 0.001:
+            let ext = file.ext.toLower()
+            if ext in videoExts:
+              if matchedFiles[epNum].video.isNone:
+                matchedFiles[epNum].video = some(file)
+                usedFiles.incl(file)
+            elif subtitleExts.anyIt(ext.endsWith(it)):
+              matchedFiles[epNum].subs.add(file)
+              usedFiles.incl(file)
 
-  # Pass 2: Match Float Episodes or Special Integer Episodes (e.g., 0, 0.5, 20.5)
-  for ep in bangumiEpisodes.data:
-    let isFloatEp = abs(ep.sort - round(ep.sort)) >= 0.001
-    let isSpecialIntEp = ep.sort == 0.0 # Add other special integers if needed, e.g. ep.sort < 1.0
-    if isFloatEp or isSpecialIntEp:
-      let bangumiEpNum = ep.sort
-      for localFile in originalMatchedLocalFiles:
-        if localFile notin usedLocalFiles:
-          let localEpNumOpt = utils.extractEpisodeNumberFromName(localFile.nameOnly)
-          if localEpNumOpt.isSome and abs(localEpNumOpt.get() - bangumiEpNum) < 0.001:
-            let lowerExt = localFile.ext.toLower()
-            if lowerExt in videoExts:
-              if matchedEpisodeFiles[bangumiEpNum].video.isNone: # Check if not already matched by integer pass (unlikely for same ep.sort)
-                matchedEpisodeFiles[bangumiEpNum].video = some(localFile)
-                usedLocalFiles.incl(localFile)
-            elif subtitleExts.anyIt(lowerExt.endsWith(it)):
-              # Check if not already matched by integer pass (unlikely for same ep.sort)
+  # 第二轮：匹配小数集数或特殊集数(0, 0.5等)
+  for ep in episodes.data:
+    let isFloat = abs(ep.sort - round(ep.sort)) >= 0.001
+    let isSpecial = ep.sort == 0.0
+    
+    if isFloat or isSpecial:
+      let epNum = ep.sort
+      for file in localFiles:
+        if file notin usedFiles:
+          let fileEpOpt = utils.extractEpisodeNumber(file.nameOnly)
+          if fileEpOpt.isSome and abs(fileEpOpt.get() - epNum) < 0.001:
+            let ext = file.ext.toLower()
+            if ext in videoExts:
+              if matchedFiles[epNum].video.isNone:
+                matchedFiles[epNum].video = some(file)
+                usedFiles.incl(file)
+            elif subtitleExts.anyIt(ext.endsWith(it)):
+              # 检查是否已添加
               var alreadyAdded = false
-              for existingSub in matchedEpisodeFiles[bangumiEpNum].subs:
-                if existingSub.fullPath == localFile.fullPath:
+              for existingSub in matchedFiles[epNum].subs:
+                if existingSub.fullPath == file.fullPath:
                   alreadyAdded = true
                   break
               if not alreadyAdded:
-                matchedEpisodeFiles[bangumiEpNum].subs.add(localFile)
-                usedLocalFiles.incl(localFile)
+                matchedFiles[epNum].subs.add(file)
+                usedFiles.incl(file)
   
-  # Fallback: Assign remaining local files sequentially to remaining Bangumi episodes
-  # This part is simplified for now: it will try to fill gaps if an episode has neither video nor subs from precise passes.
-  var remainingLocalVideos = originalMatchedLocalFiles.filter(proc (f: utils.LocalFileInfo): bool =
-    f.ext.toLower() in videoExts and f notin usedLocalFiles)
-  var remainingLocalSubtitles = originalMatchedLocalFiles.filter(proc (f: utils.LocalFileInfo): bool =
-    subtitleExts.anyIt(f.ext.toLower().endsWith(it)) and f notin usedLocalFiles)
+  # 回退策略：按顺序分配剩余文件
+  var remainingVideos = localFiles.filter(proc (f: utils.LocalFileInfo): bool =
+    f.ext.toLower() in videoExts and f notin usedFiles)
+  var remainingSubs = localFiles.filter(proc (f: utils.LocalFileInfo): bool =
+    subtitleExts.anyIt(f.ext.toLower().endsWith(it)) and f notin usedFiles)
   
-  remainingLocalVideos.sort(utils.naturalCompare)
-  remainingLocalSubtitles.sort(utils.naturalCompare)
+  remainingVideos.sort(utils.naturalCompare)
+  remainingSubs.sort(utils.naturalCompare)
 
-  var videoSeqIdx = 0
-  var subSeqIdx = 0
+  var videoIdx, subIdx = 0
 
-  # Iterate through Bangumi episodes sorted by 'sort' to ensure sequential assignment is somewhat logical
-  var sortedBangumiEps = bangumiEpisodes.data
-  sortedBangumiEps.sort(proc(a,b: bangumi_api.Episode): int = cmp(a.sort, b.sort))
+  # 按排序顺序遍历剧集
+  var sortedEps = episodes.data
+  sortedEps.sort(proc(a,b: bangumi_api.Episode): int = cmp(a.sort, b.sort))
 
-  for ep in sortedBangumiEps:
-    var currentMatch = matchedEpisodeFiles.getOrDefault(ep.sort) # Should always exist due to initialization
+  for ep in sortedEps:
+    var match = matchedFiles.getOrDefault(ep.sort)
 
-    if currentMatch.video.isNone and videoSeqIdx < remainingLocalVideos.len:
-      currentMatch.video = some(remainingLocalVideos[videoSeqIdx])
-      usedLocalFiles.incl(remainingLocalVideos[videoSeqIdx]) # Mark as used by fallback
-      videoSeqIdx += 1
+    # 分配视频
+    if match.video.isNone and videoIdx < remainingVideos.len:
+      match.video = some(remainingVideos[videoIdx])
+      usedFiles.incl(remainingVideos[videoIdx])
+      videoIdx += 1
     
-    # Try to assign remaining subtitles if no subs were found for this episode yet
-    # This is a simple sequential assignment; more sophisticated logic might be needed if subs can belong to multiple episodes
-    if currentMatch.subs.len == 0 and subSeqIdx < remainingLocalSubtitles.len:
-      # Heuristic: if a video was found (either precise or fallback), try to match subtitle name (excluding episode)
-      var assignedSub = false
-      if currentMatch.video.isSome and subSeqIdx < remainingLocalSubtitles.len :
-          let videoBaseName = utils.getBaseNameWithoutEpisode(currentMatch.video.get().nameOnly)
-          let subBaseName = utils.getBaseNameWithoutEpisode(remainingLocalSubtitles[subSeqIdx].nameOnly)
-          if videoBaseName == subBaseName:
-              currentMatch.subs.add(remainingLocalSubtitles[subSeqIdx])
-              usedLocalFiles.incl(remainingLocalSubtitles[subSeqIdx])
-              inc(subSeqIdx)
-              assignedSub = true
+    # 分配字幕
+    if match.subs.len == 0 and subIdx < remainingSubs.len:
+      # 启发式匹配：如果有视频，尝试匹配文件名
+      var assigned = false
+      if match.video.isSome and subIdx < remainingSubs.len:
+        let videoBase = utils.getBaseNameWithoutEpisode(match.video.get().nameOnly)
+        let subBase = utils.getBaseNameWithoutEpisode(remainingSubs[subIdx].nameOnly)
+        if videoBase == subBase:
+          match.subs.add(remainingSubs[subIdx])
+          usedFiles.incl(remainingSubs[subIdx])
+          subIdx += 1
+          assigned = true
       
-      if not assignedSub and subSeqIdx < remainingLocalSubtitles.len: # If no video or base name didn't match, just assign next sub
-          currentMatch.subs.add(remainingLocalSubtitles[subSeqIdx])
-          usedLocalFiles.incl(remainingLocalSubtitles[subSeqIdx])
-          inc(subSeqIdx)
+      # 如果没有匹配到，直接分配下一个
+      if not assigned and subIdx < remainingSubs.len:
+        match.subs.add(remainingSubs[subIdx])
+        usedFiles.incl(remainingSubs[subIdx])
+        subIdx += 1
           
-    matchedEpisodeFiles[ep.sort] = currentMatch # Update the table with fallback assignments
+    matchedFiles[ep.sort] = match
 
-  # Construct episodesForJson using the results from matchedEpisodeFiles
-  for ep in bangumiEpisodes.data: # Iterate in original order or sorted by API if that's preferred for JSON output
-    let epKey = utils.formatEpisodeNumber(ep.sort, bangumiEpisodes.total)
-    let filesForEp = matchedEpisodeFiles.getOrDefault(ep.sort) # Should exist
+  # 根据匹配结果构建缓存
+  for ep in episodes.data:
+    let epKey = utils.formatEpisodeNumber(ep.sort, episodes.total)
+    let files = matchedFiles.getOrDefault(ep.sort)
 
-    var episodeNameOnlyOpt: Option[string] = none[string]()
-    var episodeVideoExtOpt: Option[string] = none[string]()
-    var episodeSubtitleExtsSeq: seq[string] = @[]
+    var nameOpt: Option[string] = none[string]()
+    var videoExtOpt: Option[string] = none[string]()
+    var subExts: seq[string] = @[]
 
-    if filesForEp.video.isSome:
-      let videoInfo = filesForEp.video.get()
-      # Store the original nameOnly of the matched video file for rename reference
-      episodeNameOnlyOpt = some(videoInfo.nameOnly)
-      episodeVideoExtOpt = some(videoInfo.ext)
-    elif filesForEp.subs.len > 0: # If no video, try to use first sub's nameOnly
-      episodeNameOnlyOpt = some(filesForEp.subs[0].nameOnly)
-    # If neither video nor subs, episodeNameOnlyOpt remains none
+    # 记录文件名
+    if files.video.isSome:
+      let video = files.video.get()
+      nameOpt = some(video.nameOnly)
+      videoExtOpt = some(video.ext)
+    elif files.subs.len > 0:
+      nameOpt = some(files.subs[0].nameOnly)
 
-    if filesForEp.subs.len > 0:
-      let baseNameForComparisonOpt = if filesForEp.video.isSome:
-                                       some(utils.getBaseNameWithoutEpisode(filesForEp.video.get().nameOnly))
-                                     elif filesForEp.subs.len > 0: # If no video, use first sub's base name
-                                       some(utils.getBaseNameWithoutEpisode(filesForEp.subs[0].nameOnly))
-                                     else:
-                                       none[string]()
+    # 记录字幕扩展名
+    if files.subs.len > 0:
+      let baseNameOpt = if files.video.isSome:
+                         some(utils.getBaseNameWithoutEpisode(files.video.get().nameOnly))
+                       elif files.subs.len > 0:
+                         some(utils.getBaseNameWithoutEpisode(files.subs[0].nameOnly))
+                       else:
+                         none[string]()
 
-      for subFile in filesForEp.subs:
-        # 原始扩展名更安全，尤其是对于复合语言代码
-        let originalSubExt = subFile.ext
-        # 使用视频文件名作为第二个参数，确保语言标记被正确保留
-        let videoBaseName = if filesForEp.video.isSome: filesForEp.video.get().nameOnly else: ""
-        let cleanSubExt = utils.getCleanSubtitleExtension(originalSubExt, videoBaseName)
+      for sub in files.subs:
+        # 获取字幕扩展名
+        let origExt = sub.ext
+        let videoBase = if files.video.isSome: files.video.get().nameOnly else: ""
+        let cleanExt = utils.getCleanSubtitleExtension(origExt, videoBase)
         
-        # 记录字幕扩展名处理
-        logDebug(fmt"字幕扩展名处理: 原始='{originalSubExt}', 清理后='{cleanSubExt}'")
+        logDebug(fmt"字幕扩展名: 原始='{origExt}', 清理后='{cleanExt}'")
         
-        # 对于复合语言代码的特殊处理
-        if originalSubExt.toLower().contains(".scjp") or 
-           originalSubExt.toLower().contains(".tcjp") or 
-           originalSubExt.toLower().contains(".sccn") or 
-           originalSubExt.toLower().contains(".tccn"):
-          
-          logDebug(fmt"检测到复合语言代码: '{originalSubExt}'")
-          episodeSubtitleExtsSeq.add(originalSubExt) # 保留原始扩展名
+        # 对复合语言代码特殊处理
+        if origExt.toLower().contains(".scjp") or 
+           origExt.toLower().contains(".tcjp") or 
+           origExt.toLower().contains(".sccn") or 
+           origExt.toLower().contains(".tccn"):
+          logDebug(fmt"复合语言代码: '{origExt}'")
+          subExts.add(origExt)
         else:
-          episodeSubtitleExtsSeq.add(cleanSubExt) # 使用清理后的字幕扩展名，保留语言代码但移除其他部分
+          subExts.add(cleanExt)
         
-        let rawSubFileBaseName = utils.getBaseNameWithoutEpisode(subFile.nameOnly)
-        let cleanedSubFileBaseName = utils.getCleanedBaseName(rawSubFileBaseName)
-        if baseNameForComparisonOpt.isSome:
-          # 此处 baseNameForComparisonOpt.get() 已经是移除了集数的基础名
-          let cleanedBaseNameToCompare = utils.getCleanedBaseName(baseNameForComparisonOpt.get())
-          if cleanedSubFileBaseName != cleanedBaseNameToCompare:
-            # 此警告现在应该不会出现，因为比较的是清理后的基础名
-            stderr.writeLine fmt"警告: 番剧 {seasonIdStr} 剧集 {epKey} (sort: {ep.sort}) 的字幕文件 '{subFile.fullPath}' 的清理后基础名 ('{cleanedSubFileBaseName}') 与已确定的视频/主字幕的清理后基础文件名 ('{cleanedBaseNameToCompare}') 不一致。"
+        # 检查基础名匹配
+        if baseNameOpt.isSome:
+          let subBase = utils.getBaseNameWithoutEpisode(sub.nameOnly)
+          let cleanSubBase = utils.getCleanedBaseName(subBase)
+          let cleanBaseToCompare = utils.getCleanedBaseName(baseNameOpt.get())
+          if cleanSubBase != cleanBaseToCompare:
+            logDebug(fmt"字幕基础名不匹配: 字幕='{cleanSubBase}', 视频='{cleanBaseToCompare}'")
     
+    # 添加到结果
     episodesForJson[epKey] = utils.CachedEpisodeInfo(
       bangumiSort: ep.sort,
       bangumiName: ep.name,
-      nameOnly: episodeNameOnlyOpt, # 存储视频文件（或首个字幕文件）的原始 nameOnly，用于后续重命名时的基础名匹配
-      videoExt: episodeVideoExtOpt,
-      subtitleExts: episodeSubtitleExtsSeq # 存储与此剧集匹配的所有字幕文件的原始完整后缀
+      nameOnly: nameOpt,
+      videoExt: videoExtOpt,
+      subtitleExts: subExts
     )
 
-  let seasonInfoEntry = utils.CachedSeasonInfo(
+  # 更新缓存
+  cache[seasonId] = utils.CachedSeasonInfo(
     bangumiSeasonId: season.id,
     bangumiSeasonName: season.name,
-    totalBangumiEpisodes: bangumiEpisodes.total,
+    totalBangumiEpisodes: episodes.total,
     episodes: episodesForJson
   )
-  jsonCacheToUpdate[seasonIdStr] = seasonInfoEntry
 
 const
-  cacheFile = "cache/cache.csv"       # CSV 缓存文件名，存储基础配置和番剧名到ID的映射
-  jsonCacheFile = "cache/cache.json"  # JSON 缓存文件名，存储番剧的详细剧集信息
-  defaultBasePath = "."               # 默认的基础路径
-  defaultAnimePath = "./anime"        # 默认的番剧目标路径
+  cacheFile = "cache/cache.csv"       # CSV缓存文件
+  jsonCacheFile = "cache/cache.json"  # JSON缓存文件
+  defaultBasePath = "."               # 默认基础路径
+  defaultAnimePath = "./anime"        # 默认番剧路径
 
-  videoExts: seq[string] = @[".mkv", ".mp4", ".avi", ".mov", ".flv", ".rmvb", ".wmv", ".ts", ".webm"] # 支持的视频文件后缀
+  videoExts: seq[string] = @[".mkv", ".mp4", ".avi", ".mov", ".flv", ".rmvb", ".wmv", ".ts", ".webm"]
   subtitleExts: seq[string] = @[".ass", ".ssa", ".srt", ".sub", ".vtt", 
-                               ".scjp.ass", ".tcjp.ass", ".sccn.ass", ".tccn.ass",
-                               ".sc.ass", ".tc.ass", ".jp.ass", ".en.ass",
-                               ".scjp.srt", ".tcjp.srt", ".sccn.srt", ".tccn.srt"] # 支持的字幕文件后缀
+                              ".scjp.ass", ".tcjp.ass", ".sccn.ass", ".tccn.ass",
+                              ".sc.ass", ".tc.ass", ".jp.ass", ".en.ass",
+                              ".scjp.srt", ".tcjp.srt", ".sccn.srt", ".tccn.srt"]
 
 # --- 命令行与配置处理 ---
 
-proc parseCmdLineArgs(): (string, string, bool) =
-  ## 解析命令行参数。
-  ## 返回: (基础路径, 番剧路径, 是否使用中文名)
+proc parseCmdLine(): (string, string, bool) =
+  # 解析命令行参数
   var basePath = defaultBasePath
   var animePath = defaultAnimePath
-  var nameType = true  # 默认使用name_cn
+  var nameType = true
 
   let params = commandLineParams()
   if params.len >= 1:
-    basePath = params[0]  # 第一个参数为basepath
+    basePath = params[0]
   if params.len >= 2:
-    animePath = params[1]  # 第二个参数为animepath
+    animePath = params[1]
   if params.len >= 3:
-    nameType = params[2] == "1"  # 1使用name_cn，0使用name
+    nameType = params[2] == "1"
 
   return (basePath, animePath, nameType)
 
-proc initializeConfig() =
-  ## 初始化程序配置 (base_path_str, anime_path_str, use_name_cn)。
-  ## 首先尝试从缓存文件读取配置，如果不存在则使用命令行参数。
-  
-  # 首先检查缓存文件是否存在，如果存在则从中读取配置
+proc initConfig() =
+  # 初始化程序配置
+  # 先尝试从缓存读取
   if fileExists(cacheFile):
     try:
       let f = open(cacheFile, fmRead)
       defer: f.close()
       
-      # 从第一行读取配置
       if not f.endOfFile():
         let configLine = f.readLine()
-        let configParts = configLine.split(',')
+        let parts = configLine.split(',')
         
-        if configParts.len >= 3:
-          base_path_str = configParts[0]
-          anime_path_str = configParts[1]
-          use_name_cn = configParts[2] == "1"
-          # 读取缓存成功，提前返回
+        if parts.len >= 3:
+          basePath = parts[0]
+          animePath = parts[1]
+          useCnName = parts[2] == "1"
           
-          # 确保 cache 目录存在
+          # 确保缓存目录存在
           try:
             createDir(parentDir(cacheFile))
           except OSError as e:
-            stderr.writeLine fmt"警告: 创建缓存目录 '{parentDir(cacheFile)}' 失败: {e.msg}. 缓存功能可能受影响。"
+            stderr.writeLine fmt"警告: 创建缓存目录失败: {e.msg}"
           
           return
     except IOError as e:
-      stderr.writeLine fmt"警告: 读取缓存文件 '{cacheFile}' 失败: {e.msg}，将使用命令行参数"
+      stderr.writeLine fmt"警告: 读取缓存失败: {e.msg}"
 
-  # 如果缓存文件不存在或读取失败，则使用命令行参数
-  let (cmdBasePath, cmdAnimePath, cmdNameType) = parseCmdLineArgs()
+  # 使用命令行参数
+  let (cmdBase, cmdAnime, cmdName) = parseCmdLine()
 
-  base_path_str = cmdBasePath
-  anime_path_str = cmdAnimePath
-  use_name_cn = cmdNameType
+  basePath = cmdBase
+  animePath = cmdAnime
+  useCnName = cmdName
 
-  # 确保 cache 目录存在，因为后续操作会读写缓存文件
+  # 确保缓存目录存在
   try:
     createDir(parentDir(cacheFile))
   except OSError as e:
-    stderr.writeLine fmt"警告: 创建缓存目录 '{parentDir(cacheFile)}' 失败: {e.msg}. 缓存功能可能受影响。"
+    stderr.writeLine fmt"警告: 创建缓存目录失败: {e.msg}"
   
-  # 写入配置到缓存文件第一行
+  # 写入配置到缓存
   try:
     let f = open(cacheFile, fmWrite)
     defer: f.close()
-    let nameTypeValue = if use_name_cn: "1" else: "0"
-    f.writeLine base_path_str & "," & anime_path_str & "," & nameTypeValue
+    let nameValue = if useCnName: "1" else: "0"
+    f.writeLine basePath & "," & animePath & "," & nameValue
   except IOError as e:
-    stderr.writeLine fmt"警告: 写入配置到缓存文件 '{cacheFile}' 失败: {e.msg}"
+    stderr.writeLine fmt"警告: 写入配置失败: {e.msg}"
 
+# 处理单个番剧文件夹
 proc processSampleData(
-    sampleFolderName: string,
+    folder: string,
     csvCache: var Table[string, utils.CsvCacheEntry],
     jsonCache: var Table[string, utils.CachedSeasonInfo]
   ) =
-  ## 处理单个本地番剧文件夹：匹配规则、获取信息、更新缓存。
-  var seasonToProcessOpt: Option[bangumi_api.Season] = none(bangumi_api.Season)
-  var forceApiFetchForEpisodes = false
+  # 处理一个番剧文件夹：匹配名称、获取信息、更新缓存
+  var seasonOpt: Option[bangumi_api.Season] = none(bangumi_api.Season)
+  var needFetchEpisodes = false
 
-  if csvCache.hasKey(sampleFolderName):
-    let entry = csvCache[sampleFolderName]
-    seasonToProcessOpt = some(bangumi_api.Season(id: entry.bangumiSeasonId, name: entry.bangumiSeasonNameCache))
-    if not jsonCache.hasKey($entry.bangumiSeasonId):
-      forceApiFetchForEpisodes = true
+  # 尝试从缓存获取
+  if csvCache.hasKey(folder):
+    let entry = csvCache[folder]
+    seasonOpt = some(bangumi_api.Season(id: entry.bangumiSeasonId, name: entry.bangumiSeasonNameCache))
+    needFetchEpisodes = not jsonCache.hasKey($entry.bangumiSeasonId)
   else:
-    let matchedName = extractAnimeName(sampleFolderName) # 直接调用 extractAnimeName
-    if matchedName.len > 0:
-      let seasonOptFromApi = bangumi_api.getSeason(matchedName, use_name_cn)
-      if seasonOptFromApi.isSome:
-        seasonToProcessOpt = seasonOptFromApi
-        let s = seasonToProcessOpt.get()
-        utils.appendToCacheCsv(sampleFolderName, s.id, s.name, cacheFile)
-        csvCache[sampleFolderName] = utils.CsvCacheEntry(
-          originalFolderName: sampleFolderName,
-          bangumiSeasonNameCache: s.name,
-          bangumiSeasonId: s.id
+    # 提取番剧名
+    let animeName = extractAnimeName(folder)
+    if animeName.len > 0:
+      let seasonFromApi = bangumi_api.getSeason(animeName, useCnName)
+      if seasonFromApi.isSome:
+        seasonOpt = seasonFromApi
+        let season = seasonOpt.get()
+        utils.appendToCacheCsv(folder, season.id, season.name, cacheFile)
+        csvCache[folder] = utils.CsvCacheEntry(
+          originalFolderName: folder,
+          bangumiSeasonNameCache: season.name,
+          bangumiSeasonId: season.id
         )
-        forceApiFetchForEpisodes = true
+        needFetchEpisodes = true
       else:
-        stderr.writeLine fmt"错误: 为 '{sampleFolderName}' (匹配为 '{matchedName}') 获取番剧信息失败。"
+        stderr.writeLine fmt"错误: 获取番剧信息失败: '{folder}' (匹配为 '{animeName}')"
         return
     else:
-      stderr.writeLine fmt"提示: '{sampleFolderName}' 未匹配到任何规则。"
+      stderr.writeLine fmt"提示: '{folder}' 未匹配到番剧名"
       return
 
-  if seasonToProcessOpt.isNone:
-    stderr.writeLine fmt"严重错误: 未能确定 '{sampleFolderName}' 的番剧信息。"
+  if seasonOpt.isNone:
+    stderr.writeLine fmt"错误: 无法确定番剧信息: '{folder}'"
     return
   
-  let currentSeason = seasonToProcessOpt.get()
-  let currentSeasonIdStr = $currentSeason.id
-  var bangumiEpisodeList: bangumi_api.EpisodeList
+  let season = seasonOpt.get()
+  let seasonId = $season.id
+  var episodeList: bangumi_api.EpisodeList
 
-  if not forceApiFetchForEpisodes and jsonCache.hasKey(currentSeasonIdStr):
-    let cachedSeasonDetails = jsonCache[currentSeasonIdStr]
-    if cachedSeasonDetails.episodes.len > 0:
-      var episodesData = newSeq[bangumi_api.Episode]()
-      for _, epInfo in cachedSeasonDetails.episodes.pairs:
-        episodesData.add(bangumi_api.Episode(sort: epInfo.bangumiSort, name: epInfo.bangumiName))
-      episodesData.sort(proc(a,b: bangumi_api.Episode): int = cmp(a.sort, b.sort))
-      bangumiEpisodeList = bangumi_api.EpisodeList(total: cachedSeasonDetails.totalBangumiEpisodes, data: episodesData)
+  # 获取剧集信息
+  if not needFetchEpisodes and jsonCache.hasKey(seasonId):
+    let cached = jsonCache[seasonId]
+    if cached.episodes.len > 0:
+      var episodes = newSeq[bangumi_api.Episode]()
+      for _, epInfo in cached.episodes.pairs:
+        episodes.add(bangumi_api.Episode(sort: epInfo.bangumiSort, name: epInfo.bangumiName))
+      episodes.sort(proc(a,b: bangumi_api.Episode): int = cmp(a.sort, b.sort))
+      episodeList = bangumi_api.EpisodeList(total: cached.totalBangumiEpisodes, data: episodes)
     else:
-      forceApiFetchForEpisodes = true
+      needFetchEpisodes = true
   
-  if forceApiFetchForEpisodes or not jsonCache.hasKey(currentSeasonIdStr) or jsonCache[currentSeasonIdStr].episodes.len == 0 : # 确保在需要时获取
-    let episodesOptFromApi = bangumi_api.getEpisodes(currentSeason.id, use_name_cn)
-    if episodesOptFromApi.isNone:
-      stderr.writeLine fmt"错误: 无法获取番剧 ID '{currentSeason.id}' ({currentSeason.name}) 的剧集列表。"
+  if needFetchEpisodes:
+    let episodesFromApi = bangumi_api.getEpisodes(season.id, useCnName)
+    if episodesFromApi.isNone:
+      stderr.writeLine fmt"错误: 获取剧集列表失败: ID={season.id}, {season.name}"
       return
-    bangumiEpisodeList = episodesOptFromApi.get()
+    episodeList = episodesFromApi.get()
   
-  let localFilesPath = base_path_str / sampleFolderName
-  var matchedLocalFiles = newSeq[utils.LocalFileInfo]()
+  # 处理本地文件
+  let localPath = basePath / folder
+  var localFiles = newSeq[utils.LocalFileInfo]()
 
-  if dirExists(localFilesPath):
-    var count = 0
-    for item in walkDir(localFilesPath):
+  if dirExists(localPath):
+    for item in walkDir(localPath):
       if item.kind == pcFile:
-        var (originalDir, originalName, originalExt) = splitFile(item.path)
-        var currentName = originalName
-        var currentExt = originalExt
+        let (dirPath, name, ext) = splitFile(item.path)
+        var currentName = name
+        var currentExt = ext
 
-        # 检查原始文件名是否直接匹配已知的多部分字幕后缀 (例如 .sc.ass)
-        # splitFile("file.sc.ass") -> name="file", ext=".sc.ass" (Nim 0.20+)
-        # splitFile("file.sc.ass") -> name="file.sc", ext=".ass" (Nim < 0.20 or depending on OS behavior)
-        # 我们需要处理的是 name="file.sc", ext=".ass" 的情况，并将其转换为 name="file", ext=".sc.ass"
-
-        # 调试日志：记录原始文件信息
-        logDebug(fmt"处理文件: 原始路径='{item.path}', 分解后：dir='{originalDir}', name='{originalName}', ext='{originalExt}'")
+        # 调试信息
+        logDebug(fmt"处理文件: '{item.path}'")
         
-        let extToCompareWith = currentExt # Explicitly copy currentExt
-        if subtitleExts.anyIt(utils.eqIgnoresCase(it, extToCompareWith)): # 如果当前 ext 是一个基本的字幕后缀 (e.g., .ass, .srt)
-            # 先检查完整路径是否已包含复合语言代码
-            if originalName.contains(".scjp") or originalName.contains(".tcjp") or
-               originalName.contains(".sccn") or originalName.contains(".tccn"):
-                logDebug(fmt"检测到复合语言代码: '{originalName}{originalExt}'")
-                
-                # 从完整路径中提取正确的名称和扩展名
-                let dotPos = originalName.rfind(".")
-                if dotPos != -1:
-                    let langPart = originalName[dotPos+1 .. ^1]
-                    currentName = originalName[0 ..< dotPos]
-                    currentExt = "." & langPart & originalExt
-                    logDebug(fmt"复合语言处理: 名称='{currentName}', 扩展名='{currentExt}'")
-            else:
-                # 原有的语言代码处理逻辑
-                let nameParts = currentName.split('.')
-                if nameParts.len > 1:
-                    # 检查 name 的最后一部分是否像语言代码
-                    # (e.g., "sc", "tc", "en", "scjp", "tcjp", "chs", "cht", "jpn")
-                    let potentialLangPart = nameParts[^1]
+        # 对字幕文件特殊处理
+        let extLower = currentExt.toLower()
+        if subtitleExts.anyIt(utils.eqIgnoresCase(it, extLower)):
+          # 检查复合语言代码
+          if name.contains(".scjp") or name.contains(".tcjp") or
+             name.contains(".sccn") or name.contains(".tccn"):
+            logDebug(fmt"检测到复合语言代码: '{name}{ext}'")
+            
+            let dotPos = name.rfind(".")
+            if dotPos != -1:
+              let langPart = name[dotPos+1 .. ^1]
+              currentName = name[0 ..< dotPos]
+              currentExt = "." & langPart & ext
+              logDebug(fmt"复合语言处理: 名称='{currentName}', 扩展名='{currentExt}'")
+          else:
+            # 处理普通语言代码
+            let parts = currentName.split('.')
+            if parts.len > 1:
+              let potentialLang = parts[^1]
+              
+              # 判断是否为语言代码
+              var isLang = false
+              if potentialLang.len >= 2 and potentialLang.len <= 5:
+                isLang = potentialLang.all(proc (c: char): bool = c.isAlphaNumeric or c == '-')
+              elif potentialLang.len > 5 and potentialLang.contains('-'):
+                isLang = potentialLang.all(proc (c: char): bool = c.isAlphaNumeric or c == '-')
+
+              # 检查已知语言代码
+              if isCommonLanguageCode(potentialLang):
+                isLang = true
+                logDebug(fmt"检测到语言代码: '{potentialLang}'")
+
+              if isLang:
+                # 确认不是纯数字
+                var allDigits = true
+                for c in potentialLang:
+                  if not c.isDigit:
+                    allDigits = false
+                    break
                     
-                    # 启发式判断语言代码: 2-5个字符，主要是字母，可能包含数字或连字符
-                    var isLangCode = false
-                    if potentialLangPart.len >= 2 and potentialLangPart.len <= 5:
-                        isLangCode = potentialLangPart.all(proc (c: char): bool = c.isAlphaNumeric or c == '-')
-                    elif potentialLangPart.len > 5 and potentialLangPart.contains('-'): # 允许更长的带连字符的，如 zh-Hans
-                        isLangCode = potentialLangPart.all(proc (c: char): bool = c.isAlphaNumeric or c == '-')
-
-                    # 额外检查是否为已知语言代码
-                    if isCommonLanguageCode(potentialLangPart):
-                        isLangCode = true
-                        logDebug(fmt"检测到已知语言代码: '{potentialLangPart}'")
-
-                    if isLangCode:
-                        # 确认这个 langPart 不是一个数字（避免误判文件名中的数字为语言代码）
-                        var allDigits = true
-                        for c in potentialLangPart:
-                            if not c.isDigit:
-                                allDigits = false
-                                break
-                        if not allDigits:
-                            var tempCurrentExt = "." & potentialLangPart & currentExt
-                            var tempCurrentName = nameParts[0 .. ^2].join(".")
-                            
-                            if tempCurrentName.endsWith("."):
-                                tempCurrentName = tempCurrentName[0 .. ^2]
-                            if tempCurrentName.len == 0 and nameParts.len == 2:
-                               tempCurrentName = nameParts[0]
-                            
-                            logDebug(fmt"处理语言代码: 原始='{currentName}{currentExt}' -> 新='{tempCurrentName}{tempCurrentExt}'")
-                            currentExt = tempCurrentExt # Assign back to the original var
-                            currentName = tempCurrentName # Assign back to the original var
+                if not allDigits:
+                  let tempExt = "." & potentialLang & currentExt
+                  let tempName = parts[0 .. ^2].join(".")
+                  
+                  if tempName.endsWith("."):
+                    currentName = tempName[0 .. ^2]
+                  elif tempName.len == 0 and parts.len == 2:
+                    currentName = parts[0]
+                  else:
+                    currentName = tempName
+                  
+                  currentExt = tempExt
+                  logDebug(fmt"语言处理: 名称='{currentName}', 扩展名='{currentExt}'")
         
-        # 记录最终处理结果
+        # 记录处理结果
         logDebug(fmt"文件处理结果: 名称='{currentName}', 扩展名='{currentExt}'")
-
-        # 如果文件名是 "video.mkv" currentName="video", currentExt=".mkv"
-        # 如果文件名是 "sub.sc.ass"
-        #   - splitFile -> name="sub.sc", ext=".ass" -> 上述逻辑后: currentName="sub", currentExt=".sc.ass"
-        #   - splitFile -> name="sub", ext=".sc.ass" (较新Nim) -> 上述逻辑不执行, currentName="sub", currentExt=".sc.ass" (正确)
         
-        matchedLocalFiles.add(utils.LocalFileInfo(
+        localFiles.add(utils.LocalFileInfo(
           nameOnly: currentName,
           ext: currentExt,
           fullPath: item.path
         ))
-
-        count += 1
   else:
-    stderr.writeLine fmt"警告: 本地文件夹 '{localFilesPath}' 不存在或不是一个目录。"
+    stderr.writeLine fmt"警告: 文件夹不存在: '{localPath}'"
 
-  updateAndSaveJsonCache(jsonCache, currentSeason, bangumiEpisodeList, matchedLocalFiles, videoExts, subtitleExts, localFilesPath) # 传入localFilesPath
+  # 更新缓存
+  updateCache(jsonCache, season, episodeList, localFiles, videoExts, subtitleExts, localPath)
+
+# 主程序入口
+proc main() =
+  # 初始化
+  initConfig()
   
-# --- 主逻辑 ---
-initializeConfig() # 初始化配置
-
-var csvCacheGlobal = utils.readCsvCacheEntries(cacheFile)
-var jsonCacheGlobal = utils.loadJsonCache(jsonCacheFile)
-
-let samples = utils.readDir(base_path_str)
-
-if samples.len == 0:
-  let pathType = if base_path_str == defaultBasePath: "默认基础路径" else: "指定基础路径"
-  stderr.writeLine fmt"提示: 在{pathType} '{base_path_str}' 下未找到任何番剧文件夹。请确保文件夹存在或通过命令行参数指定。"
-
-for sample in samples:
-  processSampleData(sample, csvCacheGlobal, jsonCacheGlobal)
-
-utils.saveJsonCache(jsonCacheFile, jsonCacheGlobal) # 保存更新后的JSON缓存
-
-let finalJsonCacheForRename = utils.loadJsonCache(jsonCacheFile) # 加载最终用于重命名的JSON缓存
-
-if samples.len > 0:
-  try:
-    if not dirExists(anime_path_str):
-      createDir(anime_path_str) # 创建总的番剧目标目录（如果不存在）
-  except OSError as e:
-    stderr.writeLine fmt"严重错误: 创建番剧目标根目录 '{anime_path_str}' 失败: {e.msg}. 硬链接和重命名操作可能失败。"
-
-for originalFolderNameInBase in samples:
-  var successfulRename = false
-  var finalAnimePathName = ""
-
-  let sourceSeasonDir = base_path_str / originalFolderNameInBase
-  var targetSeasonDirForLinkAndRename = anime_path_str / originalFolderNameInBase # Initial target
-
-  if not dirExists(sourceSeasonDir):
-    stderr.writeLine fmt"警告: 源文件夹 '{sourceSeasonDir}' 不存在或不是目录，跳过。"
-    echo fmt"{originalFolderNameInBase} => 【X】"
-    continue
-
-  utils.createDirectoryHardLinkRecursive(sourceSeasonDir, targetSeasonDirForLinkAndRename) # 创建硬链接
-
-  if csvCacheGlobal.hasKey(originalFolderNameInBase):
-    let csvEntry = csvCacheGlobal[originalFolderNameInBase]
-    let seasonIdStr = $csvEntry.bangumiSeasonId
-    if finalJsonCacheForRename.hasKey(seasonIdStr):
-      let seasonInfo = finalJsonCacheForRename[seasonIdStr]
-      var validationStatus = ""
-      var actualVideoFilesCountInLinkedDir = 0
-      var filesInLinkedDir: seq[string] = @[]
-      var linkedLocalFiles = newSeq[utils.LocalFileInfo]()
-
-      if dirExists(targetSeasonDirForLinkAndRename):
-        for itemEntry in walkDir(targetSeasonDirForLinkAndRename):
-          if itemEntry.kind == pcFile:
-            let filename = itemEntry.path.extractFilename()
-            filesInLinkedDir.add(filename)
-            
-            # 构建硬链接目录中的文件信息，用于后续处理
-            # 对于复合语言代码字幕，不使用splitFile处理，避免扩展名被错误分割
-            if filename.toLower().contains(".scjp.") or filename.toLower().contains(".tcjp.") or
-               filename.toLower().contains(".sccn.") or filename.toLower().contains(".tccn."):
+  var csvCache = utils.readCsvCache(cacheFile)
+  var jsonCache = utils.loadJsonCache(jsonCacheFile)
+  
+  let folders = utils.readDir(basePath)
+  
+  if folders.len == 0:
+    let pathType = if basePath == defaultBasePath: "默认" else: "指定"
+    stderr.writeLine fmt"提示: 在{pathType}路径 '{basePath}' 下未找到番剧文件夹"
+    return
+  
+  # 处理每个文件夹
+  for folder in folders:
+    processSampleData(folder, csvCache, jsonCache)
+  
+  # 保存缓存
+  utils.saveJsonCache(jsonCacheFile, jsonCache)
+  
+  # 创建目标目录
+  if folders.len > 0:
+    try:
+      if not dirExists(animePath):
+        createDir(animePath)
+    except OSError as e:
+      stderr.writeLine fmt"错误: 创建目标目录失败: '{animePath}', {e.msg}"
+  
+  # 最终JSON缓存
+  let finalCache = utils.loadJsonCache(jsonCacheFile)
+  
+  # 处理每个文件夹
+  for folder in folders:
+    var renamed = false
+    var finalName = ""
+  
+    # 源目录和目标目录
+    let sourceDir = basePath / folder
+    var targetDir = animePath / folder
+  
+    if not dirExists(sourceDir):
+      stderr.writeLine fmt"警告: 源目录不存在: '{sourceDir}'"
+      echo fmt"{folder} => 【X】"
+      continue
+  
+    # 创建硬链接
+    utils.createDirectoryHardLink(sourceDir, targetDir)
+  
+    # 尝试从缓存获取信息
+    if csvCache.hasKey(folder):
+      let entry = csvCache[folder]
+      let id = $entry.bangumiSeasonId
+      if finalCache.hasKey(id):
+        let info = finalCache[id]
+        var validStatus = ""
+        var videoCount = 0
+        var filesInTarget: seq[string] = @[]
+        var localFiles = newSeq[utils.LocalFileInfo]()
+  
+        # 统计目标目录中的文件
+        if dirExists(targetDir):
+          for item in walkDir(targetDir):
+            if item.kind == pcFile:
+              let filename = item.path.extractFilename()
+              filesInTarget.add(filename)
               
-              logDebug(fmt"处理anime目录中的复合语言代码字幕: '{filename}'")
-              
-              # 手动分离文件名和扩展名
-              let dotPos = filename.rfind(".")
-              if dotPos != -1:
-                # 查找复合语言代码的位置
-                var extStartPos = -1
-                for langCode in @[".scjp.", ".tcjp.", ".sccn.", ".tccn."]:
-                  let lcPos = filename.toLower().find(langCode)
-                  if lcPos != -1:
-                    extStartPos = lcPos
-                    break
+              # 处理复合语言代码
+              if filename.toLower().contains(".scjp.") or filename.toLower().contains(".tcjp.") or
+                 filename.toLower().contains(".sccn.") or filename.toLower().contains(".tccn."):
+                logDebug(fmt"处理目标目录复合语言字幕: '{filename}'")
                 
-                if extStartPos != -1:
-                  let nameOnly = filename[0 ..< extStartPos]
-                  let ext = filename[extStartPos .. ^1]
-                  logDebug(fmt"复合语言字幕拆分: 名称='{nameOnly}', 扩展名='{ext}'")
-                  linkedLocalFiles.add(utils.LocalFileInfo(
-                    nameOnly: nameOnly,
-                    ext: ext,
-                    fullPath: itemEntry.path
-                  ))
+                # 手动分离文件名和扩展名
+                let dotPos = filename.rfind(".")
+                if dotPos != -1:
+                  var extStartPos = -1
+                  for langCode in @[".scjp.", ".tcjp.", ".sccn.", ".tccn."]:
+                    let lcPos = filename.toLower().find(langCode)
+                    if lcPos != -1:
+                      extStartPos = lcPos
+                      break
+                  
+                  if extStartPos != -1:
+                    let nameOnly = filename[0 ..< extStartPos]
+                    let ext = filename[extStartPos .. ^1]
+                    logDebug(fmt"复合语言拆分: 名称='{nameOnly}', 扩展名='{ext}'")
+                    localFiles.add(utils.LocalFileInfo(
+                      nameOnly: nameOnly,
+                      ext: ext,
+                      fullPath: item.path
+                    ))
+                  else:
+                    # 回退到普通处理
+                    let (dirPath, nameOnly, ext) = splitFile(item.path)
+                    localFiles.add(utils.LocalFileInfo(
+                      nameOnly: nameOnly,
+                      ext: ext,
+                      fullPath: item.path
+                    ))
                 else:
-                  # 回退到普通处理
-                  let (dirPath, nameOnly, ext) = splitFile(itemEntry.path)
-                  linkedLocalFiles.add(utils.LocalFileInfo(
-                    nameOnly: nameOnly,
-                    ext: ext,
-                    fullPath: itemEntry.path
+                  localFiles.add(utils.LocalFileInfo(
+                    nameOnly: filename,
+                    ext: "",
+                    fullPath: item.path
                   ))
               else:
-                # 没有扩展名，保持原样
-                linkedLocalFiles.add(utils.LocalFileInfo(
-                  nameOnly: filename,
-                  ext: "",
-                  fullPath: itemEntry.path
+                # 普通文件
+                let (dirPath, nameOnly, ext) = splitFile(item.path)
+                localFiles.add(utils.LocalFileInfo(
+                  nameOnly: nameOnly,
+                  ext: ext,
+                  fullPath: item.path
                 ))
+              
+              # 检查是否为视频
+              let fileExt = extractFilename(item.path).toLower()
+              let isVideo = videoExts.anyIt(fileExt.endsWith(it))
+              if isVideo:
+                videoCount += 1
+        
+        # 验证文件数量
+        let expectedEpisodes = info.totalBangumiEpisodes
+        var skipRename = false
+  
+        if expectedEpisodes < videoCount:
+          stderr.writeLine fmt"警告: 番剧 '{folder}' (ID: {id}) 视频文件过多. 预期={expectedEpisodes}, 实际={videoCount}"
+          validStatus = "【X-校验失败-文件过多】"
+          finalName = folder
+          renamed = false
+          skipRename = true
+        elif videoCount < expectedEpisodes:
+          stderr.writeLine fmt"提示: 番剧 '{folder}' (ID: {id}) 视频文件不足. 预期={expectedEpisodes}, 实际={videoCount}"
+  
+        # 重命名文件
+        if not skipRename:
+          utils.renameFilesBasedOnCache(targetDir, info, filesInTarget)
+          
+          let desiredName = utils.sanitizeFilename(info.bangumiSeasonName)
+          var finalPath = targetDir
+          
+          if dirExists(targetDir):
+            if targetDir != (animePath / desiredName):
+              let newPath = animePath / desiredName
+              try:
+                moveDir(targetDir, newPath)
+                renamed = true
+                finalName = desiredName
+                finalPath = newPath
+              except OSError as e:
+                stderr.writeLine fmt"错误: 重命名目录失败: {targetDir} -> {newPath}, {e.msg}"
+                if dirExists(targetDir):
+                  finalName = folder
+                else:
+                  finalName = ""
+                renamed = false
             else:
-              # 普通文件使用splitFile
-              let (dirPath, nameOnly, ext) = splitFile(itemEntry.path)
-              linkedLocalFiles.add(utils.LocalFileInfo(
-                nameOnly: nameOnly,
-                ext: ext,
-                fullPath: itemEntry.path
-              ))
-            
-            # 检查是否是视频文件
-            let fileExt = extractFilename(itemEntry.path).toLower()
-            let isVideo = videoExts.anyIt(fileExt.endsWith(it))
-            if isVideo:
-              actualVideoFilesCountInLinkedDir += 1
-      
-      # 现在对硬链接目录中的文件进行处理
-      var linkedMatchedEpisodeFiles = initTable[float, tuple[video: Option[utils.LocalFileInfo], subs: seq[utils.LocalFileInfo]]]()
-      
-      # 为所有剧集初始化匹配表
-      for episodeKey, episodeInfo in seasonInfo.episodes:
-        linkedMatchedEpisodeFiles[episodeInfo.bangumiSort] = (video: none[utils.LocalFileInfo](), subs: newSeq[utils.LocalFileInfo]())
-      
-      # 匹配视频和字幕文件
-      for file in linkedLocalFiles:
-        let epNumOpt = utils.extractEpisodeNumberFromName(file.nameOnly)
-        if epNumOpt.isSome:
-          let epNum = epNumOpt.get()
-          if linkedMatchedEpisodeFiles.hasKey(epNum):
-            # 对于复合语言代码字幕文件的特殊处理
-            if file.ext.toLower().contains(".scjp.") or file.ext.toLower().contains(".tcjp.") or
-               file.ext.toLower().contains(".sccn.") or file.ext.toLower().contains(".tccn."):
-              logDebug(fmt"匹配复合语言字幕: EP={epNum}, 文件='{file.fullPath}'")
-              linkedMatchedEpisodeFiles[epNum].subs.add(file)
-            # 普通文件处理
-            elif file.ext.toLower() in videoExts:
-              if linkedMatchedEpisodeFiles[epNum].video.isNone:
-                linkedMatchedEpisodeFiles[epNum].video = some(file)
-            elif subtitleExts.anyIt(file.ext.toLower().endsWith(it)):
-              linkedMatchedEpisodeFiles[epNum].subs.add(file)
-      
-      # 现在对硬链接目录中的每集视频和字幕进行处理（重命名）
-      for epNum, filesForEp in linkedMatchedEpisodeFiles.pairs:
-        if filesForEp.video.isSome and filesForEp.subs.len > 0:
-          processEpisodeFiles(targetSeasonDirForLinkAndRename, epNum, filesForEp.video, filesForEp.subs)
-      
-      let expectedTotalEpisodes = seasonInfo.totalBangumiEpisodes
-      var skipRenameDueToValidationError = false
-
-      if expectedTotalEpisodes < actualVideoFilesCountInLinkedDir:
-        stderr.writeLine fmt"警告: 番剧 '{originalFolderNameInBase}' (ID: {seasonIdStr}) 本地视频文件过多。预期: {expectedTotalEpisodes}, 实际: {actualVideoFilesCountInLinkedDir}。跳过重命名。"
-        validationStatus = "【X-校验失败-文件过多】"
-        finalAnimePathName = originalFolderNameInBase # Keep original name if skipping rename
-        successfulRename = false # Explicitly mark as not successfully "renamed to new standard"
-        skipRenameDueToValidationError = true
-      elif actualVideoFilesCountInLinkedDir < expectedTotalEpisodes:
-         stderr.writeLine fmt"提示: 番剧 '{originalFolderNameInBase}' (ID: {seasonIdStr}) 本地视频文件数量不足。预期: {expectedTotalEpisodes}, 实际: {actualVideoFilesCountInLinkedDir}。将尝试按顺序重命名已有文件。"
-         # validationStatus = "【注意-文件不齐】" # Optional: User prefers no failure mark here
-
-      if not skipRenameDueToValidationError:
-        utils.renameFilesBasedOnCache(targetSeasonDirForLinkAndRename, seasonInfo, filesInLinkedDir)
-        
-        let desiredSeasonFolderName = utils.sanitizeFilename(seasonInfo.bangumiSeasonName)
-        var finalPathForValidation = targetSeasonDirForLinkAndRename
-        
-        if dirExists(targetSeasonDirForLinkAndRename):
-          if targetSeasonDirForLinkAndRename != (anime_path_str / desiredSeasonFolderName):
-            let potentialNewPath = anime_path_str / desiredSeasonFolderName
-            try:
-              moveDir(targetSeasonDirForLinkAndRename, potentialNewPath)
-              successfulRename = true
-              finalAnimePathName = desiredSeasonFolderName
-              finalPathForValidation = potentialNewPath
-            except OSError as e:
-              stderr.writeLine fmt"  错误: 重命名文件夹 '{targetSeasonDirForLinkAndRename}' 到 '{potentialNewPath}' 失败: {e.msg}"
-              if dirExists(targetSeasonDirForLinkAndRename): # If move failed, but original linked dir exists
-                 finalAnimePathName = originalFolderNameInBase
-              else: # Original linked dir also gone somehow
-                 finalAnimePathName = ""
-              successfulRename = false
-          else: # Name is already correct
-            successfulRename = true
-            finalAnimePathName = desiredSeasonFolderName
-            finalPathForValidation = targetSeasonDirForLinkAndRename
-        else: # Linking failed to create targetSeasonDirForLinkAndRename initially
-           stderr.writeLine fmt"错误: 硬链接目标目录 '{targetSeasonDirForLinkAndRename}' 未创建。"
-           finalAnimePathName = ""
-           successfulRename = false
-
-        # Post-rename/move validation (directory existence)
-        if successfulRename and finalAnimePathName.len > 0 and not dirExists(finalPathForValidation):
-            stderr.writeLine fmt"错误: 番剧目录 '{finalPathForValidation}' 在重命名/移动后丢失。"
-            validationStatus = if validationStatus.len > 0: validationStatus & " " else: "" & "【X-目录丢失】"
-            successfulRename = false # Mark as overall failure if dir is gone
-            finalAnimePathName = originalFolderNameInBase # Revert to original for output if new path is lost
-        elif not successfulRename and finalAnimePathName.len == 0 and not dirExists(targetSeasonDirForLinkAndRename):
-            # If linking failed AND rename wasn't even attempted or failed to set a name
-            validationStatus = if validationStatus.len > 0: validationStatus & " " else: "" & "【X-处理失败】"
-
-
-      if finalAnimePathName.len > 0 : # Covers successful rename or skipped rename with original name
-        echo fmt"{originalFolderNameInBase} => {finalAnimePathName}{validationStatus}"
-      else: # General failure case
-        echo fmt"{originalFolderNameInBase} => 【X】{validationStatus}"
-        
+              renamed = true
+              finalName = desiredName
+          else:
+            stderr.writeLine fmt"错误: 目标目录不存在: '{targetDir}'"
+            finalName = ""
+            renamed = false
+  
+          # 验证结果
+          if renamed and finalName.len > 0 and not dirExists(finalPath):
+            stderr.writeLine fmt"错误: 目录在重命名后丢失: '{finalPath}'"
+            validStatus = if validStatus.len > 0: validStatus & " " else: "" & "【X-目录丢失】"
+            renamed = false
+            finalName = folder
+          elif not renamed and finalName.len == 0 and not dirExists(targetDir):
+            validStatus = if validStatus.len > 0: validStatus & " " else: "" & "【X-处理失败】"
+  
+        # 输出结果
+        if finalName.len > 0:
+          echo fmt"{folder} => {finalName}{validStatus}"
+        else:
+          echo fmt"{folder} => 【X】{validStatus}"
+      else:
+        stderr.writeLine fmt"警告: JSON缓存中未找到ID '{id}' (来自 '{folder}')"
+        echo fmt"{folder} => 【X】"
     else:
-      stderr.writeLine fmt"警告: JSON缓存中未找到ID '{seasonIdStr}' (来自 '{originalFolderNameInBase}')，无法确定最终名称。"
-      echo fmt"{originalFolderNameInBase} => 【X】"
-  else:
-    stderr.writeLine fmt"警告: CSV缓存中未找到 '{originalFolderNameInBase}'，无法处理。"
-    echo fmt"{originalFolderNameInBase} => 【X】"
+      stderr.writeLine fmt"警告: CSV缓存中未找到 '{folder}'"
+      echo fmt"{folder} => 【X】"
+
+# 执行主程序
+main()

@@ -1,69 +1,64 @@
 import std/[httpclient, json, options, strformat, strutils]
 
-# --- 类型定义 (从原 types.nim 移动过来) ---
+# 类型定义
 type
-  Season* = object                   ## Bangumi 番剧季度信息 (API获取后，程序内部使用)
-    id*: int                         # 番剧在 Bangumi 上的 ID
-    name*: string                    # 番剧名称 (优先使用中文名)
+  Season* = object 
+    id*: int              # 番剧ID
+    name*: string         # 番剧名称
 
-  Episode* = object                  ## Bangumi 单集信息 (API获取后，程序内部使用)
-    sort*: float                     # 剧集排序号
-    name*: string                    # 剧集名称 (优先使用中文名)
+  Episode* = object 
+    sort*: float          # 剧集排序号
+    name*: string         # 剧集名称
 
-  EpisodeList* = object              ## Bangumi 剧集列表 (API获取后，程序内部使用)
-    total*: int                      # 总集数
-    data*: seq[Episode]              # 剧集数据序列
+  EpisodeList* = object 
+    total*: int           # 总集数
+    data*: seq[Episode]   # 剧集数据
 
-  RawEpisode* = object               ## API 返回的原始单集数据结构
+  RawEpisode* = object 
     sort*: float
-    name*: string                    # 原名
-    name_cn*: string                 # 中文名
+    name*: string         # 原名
+    name_cn*: string      # 中文名
 
-  RawEpisodeList* = object           ## API 返回的原始剧集列表数据结构
+  RawEpisodeList* = object 
     total*: int
     data*: seq[RawEpisode]
 
-  SeasonSearchResult* = object       ## API 搜索番剧结果中的单项数据结构
+  SeasonSearchResult* = object 
     id*: int
-    name*: string                    # 原名
-    name_cn*: string                 # 中文名
+    name*: string         # 原名
+    name_cn*: string      # 中文名
 
-  SeasonResponse* = object           ## API 搜索番剧的顶层响应数据结构
-    results*: int                    # 搜索结果数量
-    list*: seq[SeasonSearchResult]   # 搜索结果列表
+  SeasonResponse* = object
+    results*: int                    
+    list*: seq[SeasonSearchResult]   
 
-# --- Bangumi API 相关函数 (从原 core/bangumi_api.nim 移动过来) ---
-func setURL*(k: string): string =
-  ## 构建 Bangumi 搜索番剧的 API URL。
+# API相关函数
+func buildSearchUrl*(k: string): string =
   &"http://api.bgm.tv/search/subject/{k}?type=2&responseGroup=small"
 
-func setURL*(id: int): string =
-  ## 构建 Bangumi 获取番剧剧集的 API URL。
+func buildEpisodesUrl*(id: int): string =
   &"http://api.bgm.tv/v0/episodes?subject_id={id}"
 
-func url*(id: int): string =
-  ## 构建番剧在 Bangumi 网站上的 URL。
+func buildSeasonUrl*(id: int): string =
   "http://bgm.tv/subject/" & $id
 
-proc getApiData*[T](apiUrl: string): Option[T] =
-  ## 从指定的 API URL 获取数据并解析为类型 T。
-  ## 使用自定义 User-Agent。
+proc fetchApi*[T](apiUrl: string): Option[T] =
+  # 从API获取数据并解析为指定类型
   var client = newHttpClient(headers = newHttpHeaders({"User-Agent": "uuzp/AAA/0.1.0(https://github.com/uuzp/AAA )"}))
   try:
     let response = client.getContent(apiUrl)
     let jsonData = parseJson(response)
     result = some(jsonData.to(T))
   except CatchableError as e:
-    echo &"错误: 从 URL {apiUrl} 获取或解析数据失败: {e.msg}"
+    echo &"错误: API请求失败: {apiUrl}, {e.msg}"
     result = none(T)
   finally:
     client.close()
 
 proc getSeason*(searchTerm: string, useCnName: bool = true): Option[Season] =
-  ## 根据搜索词从 Bangumi API 获取番剧信息。
-  ## 返回番剧的 ID 和名称 (根据useCnName决定是否优先使用中文名)。
-  let apiUrl = setURL(searchTerm)
-  let apiResponseOpt = getApiData[SeasonResponse](apiUrl)
+  # 搜索番剧信息
+  let apiUrl = buildSearchUrl(searchTerm)
+  let apiResponseOpt = fetchApi[SeasonResponse](apiUrl)
 
   if apiResponseOpt.isSome:
     let apiResponse = apiResponseOpt.get()
@@ -77,10 +72,9 @@ proc getSeason*(searchTerm: string, useCnName: bool = true): Option[Season] =
   return none(Season)
 
 proc getEpisodes*(id: int, useCnName: bool = true): Option[EpisodeList] =
-  ## 根据番剧 ID 从 Bangumi API 获取剧集列表。
-  ## 返回总集数和剧集信息 (根据useCnName决定是否优先使用中文名)。
-  let apiUrl = setURL(id)
-  let rawListOpt = getApiData[RawEpisodeList](apiUrl)
+  # 获取番剧剧集列表
+  let apiUrl = buildEpisodesUrl(id)
+  let rawListOpt = fetchApi[RawEpisodeList](apiUrl)
 
   if rawListOpt.isSome:
     let rawList = rawListOpt.get()

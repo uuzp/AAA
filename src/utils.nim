@@ -200,138 +200,110 @@ proc sanitizeFilename*(filename: string): string =
       result = result[0 .. ^2]
   return result
 
-proc createDirectoryHardLinkRecursive*(sourceDir: string, targetDir: string) =
-  ## 递归地将 sourceDir 的内容硬链接到 targetDir。
-  ## 所有字幕文件将直接复制而不是硬链接
+# 文件操作函数
+proc createDirectoryHardLink*(sourceDir: string, targetDir: string) =
+  # 递归地将sourceDir内容硬链接到targetDir，字幕文件直接复制
   if not dirExists(sourceDir):
-    stderr.writeLine fmt"错误: 源目录 '{sourceDir}' 不存在，无法执行硬链接。"
+    stderr.writeLine fmt"错误: 源目录 '{sourceDir}' 不存在"
     return
 
   try:
     if not dirExists(targetDir):
       createDir(targetDir)
   except OSError as e:
-    stderr.writeLine fmt"严重错误: 创建目标根目录 '{targetDir}' 失败: {e.msg}. 中止此目录的硬链接。"
+    stderr.writeLine fmt"错误: 创建目标目录失败: {targetDir}, {e.msg}"
     return
 
-  var linkedFilesCount = 0
-  var copiedFilesCount = 0
-  var createdDirsInTargetCount = 0 
-  var linkErrorsCount = 0
-  var dirCreateErrorsCount = 0
+  var linkedCount, copiedCount, dirCount, errorCount = 0
 
-  for kind, itemFullPathInSource in walkDir(sourceDir): 
-    if not itemFullPathInSource.startsWith(sourceDir):
-      continue
-    
-    # 获取文件相对路径
-    var relativeItemPath: string
+  for kind, srcPath in walkDir(sourceDir): 
+    # 获取相对路径
+    var relPath: string
     if sourceDir.endsWith(PathSep):
-      relativeItemPath = itemFullPathInSource[sourceDir.len .. ^1]
+      relPath = srcPath[sourceDir.len .. ^1]
     else:
-      if itemFullPathInSource.len > sourceDir.len : 
-          relativeItemPath = itemFullPathInSource[(sourceDir.len + 1) .. ^1]
+      if srcPath.len > sourceDir.len: 
+        relPath = srcPath[(sourceDir.len + 1) .. ^1]
       else: 
-          continue
+        continue
     
-    if relativeItemPath.len == 0: 
+    if relPath.len == 0: 
       continue
 
-    # 直接使用原始文件名构建目标路径，不分解扩展名
-    let targetItemPath = targetDir / relativeItemPath
+    let targetPath = targetDir / relPath
+    let (_, filename) = splitPath(srcPath)
+    let isSubtitle = isSubtitleFile(filename)
     
-    # 获取文件名（不含路径）
-    let (_, filenameOnly) = splitPath(itemFullPathInSource)
+    logDebug(fmt"处理文件: '{srcPath}' -> '{targetPath}'")
     
-    # 增加日志输出，跟踪文件路径
-    logDebug(fmt"处理文件: 源路径='{itemFullPathInSource}', 目标路径='{targetItemPath}', 文件名='{filenameOnly}'")
-
-    # 检查是否为字幕文件
-    let isSubtitle = isSubtitleFile(filenameOnly)
-    if isSubtitle:
-      logDebug(fmt"发现字幕文件: '{filenameOnly}'")
-                            
     case kind
     of pcFile:
-      let targetFileParentDir = parentDir(targetItemPath)
+      let targetParentDir = parentDir(targetPath)
       try:
-        if not dirExists(targetFileParentDir):
-          createDir(targetFileParentDir)
-          logDebug(fmt"创建目录: '{targetFileParentDir}'")
+        if not dirExists(targetParentDir):
+          createDir(targetParentDir)
+          logDebug(fmt"创建目录: '{targetParentDir}'")
       except OSError:
-        logDebug(fmt"创建目录失败: '{targetFileParentDir}'")
-        discard 
+        logDebug(fmt"创建目录失败: '{targetParentDir}'")
       
-      try:
-        if fileExists(targetItemPath): 
-          logDebug(fmt"文件已存在: '{targetItemPath}'")
-          discard
-        else:
-          # 对于字幕文件，使用copyFile而不是createHardLink
+      if fileExists(targetPath): 
+        logDebug(fmt"文件已存在: '{targetPath}'")
+      else:
+        try:
           if isSubtitle:
-            copyFile(itemFullPathInSource, targetItemPath)
-            copiedFilesCount += 1
-            logDebug(fmt"复制成功(字幕文件): '{itemFullPathInSource}' -> '{targetItemPath}'")
+            copyFile(srcPath, targetPath)
+            copiedCount += 1
+            logDebug(fmt"复制字幕成功: '{srcPath}' -> '{targetPath}'")
           else:
-            createHardLink(itemFullPathInSource, targetItemPath)
-            linkedFilesCount += 1
-            logDebug(fmt"硬链接成功: '{itemFullPathInSource}' -> '{targetItemPath}'")
-      except OSError as e:
-        let operationType = if isSubtitle: "复制" else: "硬链接"
-        stderr.writeLine fmt"错误: {operationType}文件 '{itemFullPathInSource}' 到 '{targetItemPath}' 失败: {e.msg}"
-        logDebug(fmt"{operationType}失败: '{itemFullPathInSource}' -> '{targetItemPath}', 错误: {e.msg}")
-        linkErrorsCount += 1
+            createHardLink(srcPath, targetPath)
+            linkedCount += 1
+            logDebug(fmt"硬链接成功: '{srcPath}' -> '{targetPath}'")
+        except OSError as e:
+          let opType = if isSubtitle: "复制" else: "硬链接"
+          stderr.writeLine fmt"错误: {opType}文件失败: {srcPath} -> {targetPath}, {e.msg}"
+          errorCount += 1
     of pcDir:
       try:
-        if not dirExists(targetItemPath):
-          createDir(targetItemPath)
-          createdDirsInTargetCount += 1
-          logDebug(fmt"创建目录: '{targetItemPath}'")
+        if not dirExists(targetPath):
+          createDir(targetPath)
+          dirCount += 1
       except OSError:
-        logDebug(fmt"创建目录失败: '{targetItemPath}'")
-        dirCreateErrorsCount += 1
+        logDebug(fmt"创建目录失败: '{targetPath}'")
+        errorCount += 1
     else: 
       discard
 
-  if linkErrorsCount > 0 or dirCreateErrorsCount > 0:
-    stderr.writeLine fmt"硬链接期间发生错误: {linkErrorsCount} 个文件链接失败, {dirCreateErrorsCount} 个目录创建失败。"
+  if errorCount > 0:
+    stderr.writeLine fmt"发生错误: {errorCount} 个操作失败"
   
-  logDebug(fmt"处理完成: 成功链接 {linkedFilesCount} 个文件, 复制 {copiedFilesCount} 个字幕文件, 创建 {createdDirsInTargetCount} 个目录")
+  logDebug(fmt"处理完成: 链接={linkedCount}, 复制={copiedCount}, 目录={dirCount}")
 
 # --- 字幕扩展名处理 ---
 proc getSubtitleSuffix*(subFilename, videoBaseName: string): string =
-  ## 递归分割字幕文件名，直到找到与视频文件名匹配的部分
-  ## 返回字幕文件的后缀部分
-  
-  # 获取完整的文件名和扩展名
+  # 提取字幕文件的后缀部分
   let (_, name, ext) = splitFile(subFilename)
   
-  # 直接比较文件名(不含扩展名)是否与视频文件名相同
+  # 直接比较是否匹配
   if name == videoBaseName:
     return ext
-    
-  # 防止死循环：如果文件名中没有点号，直接返回扩展名
+  
+  # 防止死循环
   if name.find('.') == -1:
     return ext
-    
-  # 如果文件名不匹配，但可能是因为字幕文件名包含额外信息
-  # 例如: 视频="anime", 字幕="anime.1080p.FLAC-CoolFansSub"
   
-  # 分割文件名最后一个点号
-  let lastDotPos = name.rfind('.')
-  if lastDotPos == -1:
-    return ext  # 没有点号，直接返回扩展名
-    
-  let nameBase = name[0 ..< lastDotPos]
-  let nameSuffix = name[lastDotPos .. ^1]
+  # 递归处理找到匹配部分
+  let lastDot = name.rfind('.')
+  if lastDot == -1:
+    return ext
   
-  # 检查基础部分是否匹配视频名
+  let nameBase = name[0 ..< lastDot]
+  let nameSuffix = name[lastDot .. ^1]
+  
   if nameBase == videoBaseName:
     return nameSuffix & ext
-    
-  # 递归处理剩余部分
-  # 限制递归深度，防止死循环
-  let maxDepth = 5  # 最多允许5层递归
+  
+  # 限制递归深度
+  let maxDepth = 5
   var depth = 0
   var currentName = nameBase
   var suffixes = @[nameSuffix]
@@ -339,23 +311,21 @@ proc getSubtitleSuffix*(subFilename, videoBaseName: string): string =
   while depth < maxDepth:
     depth += 1
     
-    let nextDotPos = currentName.rfind('.')
-    if nextDotPos == -1:
-      break  # 没有更多的点号
-      
-    let nextBase = currentName[0 ..< nextDotPos]
-    let nextSuffix = currentName[nextDotPos .. ^1]
+    let nextDot = currentName.rfind('.')
+    if nextDot == -1:
+      break
+    
+    let nextBase = currentName[0 ..< nextDot]
+    let nextSuffix = currentName[nextDot .. ^1]
     
     suffixes.add(nextSuffix)
     
     if nextBase == videoBaseName:
-      # 找到匹配，组合所有后缀
       suffixes.add(ext)
       return suffixes.reversed().join("")
-      
+    
     currentName = nextBase
   
-  # 如果未找到匹配或达到最大深度，返回原始扩展名
   return ext
 
 proc safeGetSubtitleSuffix*(subFilename, videoBaseName: string): string =
@@ -366,17 +336,15 @@ proc safeGetSubtitleSuffix*(subFilename, videoBaseName: string): string =
   return result
 
 proc parseSubtitleExtension*(fullExt: string, videoBaseName: string = ""): SubtitleInfo =
-  ## 解析字幕扩展名，返回结构化信息
-  ## 如果提供了视频基本文件名，则尝试匹配
+  # 解析字幕扩展名，返回结构化信息
   result.rawExt = fullExt
   
-  # 查找基础扩展名
+  # 找到基础扩展名
   for base in knownBaseSuffixes:
     if fullExt.toLower().endsWith(base.toLower()):
       result.baseExt = fullExt[^base.len..^1]
       break
   
-  # 如果没有找到已知扩展名，使用最后一个.后的内容
   if result.baseExt.len == 0:
     let lastDot = fullExt.rfind('.')
     if lastDot >= 0:
@@ -387,67 +355,55 @@ proc parseSubtitleExtension*(fullExt: string, videoBaseName: string = ""): Subti
   # 设置复合标志
   result.isCompound = fullExt.count('.') > 1
   
-  # 如果提供了视频基本文件名，则使用新的递归匹配逻辑
+  # 处理字幕后缀
   if videoBaseName.len > 0:
-    # 假设我们有完整的文件名，构造一个临时文件名
     let tempFullName = videoBaseName & fullExt
-    # 获取字幕后缀
-    result.suffix = safeGetSubtitleSuffix(tempFullName, videoBaseName)
+    result.suffix = getSubtitleSuffix(tempFullName, videoBaseName)
   else:
-    # 兼容旧逻辑，返回整个扩展名
     result.suffix = fullExt
 
 proc isCompoundSubtitle*(filename: string): bool =
-  ## 判断是否为复合语言代码字幕文件
-  # 检查文件是否是字幕文件
+  # 判断是否为复合语言代码字幕文件
   if not isSubtitleFile(filename):
     return false
-    
-  # 提取文件名部分(不含路径但含扩展名)
-  let (_, filenameOnly) = splitPath(filename)
   
-  # 提取不带扩展名的文件名
+  let (_, filenameOnly) = splitPath(filename)
   let (_, nameWithoutExt, _) = splitFile(filenameOnly)
   
-  # 检查文件名中是否有多个点号，表示可能有复合语言代码
-  # 例如: episode01.scjp.ass
   return nameWithoutExt.contains('.')
 
 # --- 字幕文件复制/硬链接逻辑 ---
 proc processSubtitleFile*(sourceFile, targetFile: string): bool =
-  ## 处理字幕文件(始终复制而非硬链接)
-  ## 返回是否成功
+  # 处理字幕文件(总是复制而非硬链接)
   if not fileExists(sourceFile):
     logDebug(fmt"字幕文件不存在: '{sourceFile}'")
     return false
-    
-  # 创建目标目录（如果不存在）
+  
+  # 创建目标目录
   let targetDir = parentDir(targetFile)
   if not dirExists(targetDir):
     try:
       createDir(targetDir)
-      logDebug(fmt"创建目录: '{targetDir}'")
     except OSError as e:
-      logDebug(fmt"创建目录失败: '{targetDir}', 错误: {e.msg}")
+      logDebug(fmt"创建目录失败: '{targetDir}', {e.msg}")
       return false
   
   # 已存在则跳过
   if fileExists(targetFile):
     logDebug(fmt"字幕文件已存在: '{targetFile}'")
     return true
-    
+  
   try:
-    # 所有字幕文件都直接复制
     copyFile(sourceFile, targetFile)
     logDebug(fmt"复制字幕成功: '{sourceFile}' -> '{targetFile}'")
     return true
   except OSError as e:
-    logDebug(fmt"复制字幕失败: '{sourceFile}' -> '{targetFile}', 错误: {e.msg}")
+    logDebug(fmt"复制字幕失败: '{sourceFile}' -> '{targetFile}', {e.msg}")
     return false
 
 # --- 字幕文件重命名逻辑 ---
 proc getSubtitleFilesByPattern*(files: seq[string], pattern: string): seq[string] =
-  ## 根据模式匹配字幕文件
+  # 根据模式匹配字幕文件
   result = @[]
   let patternLower = pattern.toLower()
   
@@ -456,213 +412,157 @@ proc getSubtitleFilesByPattern*(files: seq[string], pattern: string): seq[string
       result.add(file)
 
 proc renameSubtitleFile*(sourceFile, targetFile: string): bool =
-  ## 重命名字幕文件，保留完整扩展名
+  # 重命名字幕文件，保留完整扩展名
   if not fileExists(sourceFile):
-    logDebug(fmt"要重命名的字幕文件不存在: '{sourceFile}'")
+    logDebug(fmt"字幕文件不存在: '{sourceFile}'")
     return false
-    
+  
   if sourceFile == targetFile:
-    logDebug(fmt"字幕文件名已正确，无需重命名: '{sourceFile}'")
+    logDebug(fmt"文件名已正确，无需重命名: '{sourceFile}'")
     return true
-    
+  
   try:
     moveFile(sourceFile, targetFile)
-    logDebug(fmt"重命名字幕成功: '{sourceFile}' -> '{targetFile}'")
+    logDebug(fmt"重命名成功: '{sourceFile}' -> '{targetFile}'")
     return true
   except OSError as e:
-    logDebug(fmt"重命名字幕失败: '{sourceFile}' -> '{targetFile}', 错误: {e.msg}")
+    logDebug(fmt"重命名失败: '{sourceFile}' -> '{targetFile}', {e.msg}")
     return false
 
-# --- 集成到现有系统的修改版renameFilesBasedOnCache ---
 proc renameFilesBasedOnCache*(
-    targetSeasonPath: string,
+    targetPath: string,
     seasonInfo: CachedSeasonInfo,
-    filesInTargetDir: seq[string] 
+    files: seq[string] 
   ) =
-  ## 根据缓存信息重命名文件 (使用新的字幕匹配逻辑)
-  
-  if not dirExists(targetSeasonPath):
-    stderr.writeLine fmt"错误: 目标番剧文件夹 '{targetSeasonPath}' 不存在，无法重命名。"
+  # 根据缓存信息重命名文件
+  if not dirExists(targetPath):
+    stderr.writeLine fmt"错误: 目标文件夹 '{targetPath}' 不存在"
     return
 
-  var renamedFilesCount = 0
-  var renameErrorsCount = 0
+  var renamedCount = 0
+  var errorCount = 0
   
-  # 详细记录所有文件列表，帮助调试
-  logDebug(fmt"目标文件夹'{targetSeasonPath}'中的所有文件:")
-  for file in filesInTargetDir:
+  # 记录调试信息
+  logDebug(fmt"目标文件夹'{targetPath}'中的文件:")
+  for file in files:
     logDebug(fmt"  - {file}")
 
   # 处理每个剧集
-  for epKey, cachedEp in pairs(seasonInfo.episodes):
-    if cachedEp.nameOnly.isNone:
+  for epKey, ep in pairs(seasonInfo.episodes):
+    if ep.nameOnly.isNone:
       continue
-      
-    let cleanBangumiEpName = sanitizeFilename(cachedEp.bangumiName)
-    let newFileNameBasePart = sanitizeFilename(fmt"{epKey} - {cleanBangumiEpName}")
-    let cachedNameOnly = cachedEp.nameOnly.get()
-    let cleanedCachedName = getCleanedBaseName(cachedNameOnly)
     
-    # --- 视频文件处理 ---
-    var matchedVideoFile: Option[string] = none(string)
-    var matchedVideoName = ""
+    let cleanEpName = sanitizeFilename(ep.bangumiName)
+    let newBaseName = sanitizeFilename(fmt"{epKey} - {cleanEpName}")
+    let cachedName = ep.nameOnly.get()
+    let cleanedCachedName = getCleanedBaseName(cachedName)
     
-    if cachedEp.videoExt.isSome:
-      let videoExt = cachedEp.videoExt.get()
+    # 处理视频文件
+    var videoFile: Option[string] = none(string)
+    var videoName = ""
+    
+    if ep.videoExt.isSome:
+      let videoExt = ep.videoExt.get()
       
       # 查找匹配的视频文件
-      for file in filesInTargetDir:
+      for file in files:
         let (_, namePart, extPart) = splitFile(file)
         if extPart == videoExt:
-          let cleanedNamePart = getCleanedBaseName(namePart)
-          if cleanedNamePart == cleanedCachedName:
-            matchedVideoFile = some(file)
-            matchedVideoName = namePart  # 记录找到的视频文件名
+          let cleanedName = getCleanedBaseName(namePart)
+          if cleanedName == cleanedCachedName:
+            videoFile = some(file)
+            videoName = namePart
             break
       
       # 重命名视频文件
-      if matchedVideoFile.isSome:
-        let oldVideoPath = targetSeasonPath / matchedVideoFile.get()
-        let newVideoPath = targetSeasonPath / (newFileNameBasePart & videoExt)
+      if videoFile.isSome:
+        let oldPath = targetPath / videoFile.get()
+        let newPath = targetPath / (newBaseName & videoExt)
         
-        if oldVideoPath != newVideoPath:
-          if fileExists(oldVideoPath):
-            try:
-              moveFile(oldVideoPath, newVideoPath)
-              renamedFilesCount += 1
-              logDebug(fmt"重命名视频成功: '{oldVideoPath}' -> '{newVideoPath}'")
-            except OSError as e:
-              stderr.writeLine fmt"错误: 重命名视频文件 '{oldVideoPath}' 到 '{newVideoPath}' 失败: {e.msg}"
-              renameErrorsCount += 1
-              logDebug(fmt"重命名视频失败: '{oldVideoPath}' -> '{newVideoPath}', 错误: {e.msg}")
-          else:
-            stderr.writeLine fmt"警告: 预期的视频文件 '{oldVideoPath}' 在尝试重命名时未找到。"
-            logDebug(fmt"视频文件未找到: '{oldVideoPath}'")
+        if oldPath != newPath and fileExists(oldPath):
+          try:
+            moveFile(oldPath, newPath)
+            renamedCount += 1
+            logDebug(fmt"重命名视频: '{oldPath}' -> '{newPath}'")
+          except OSError as e:
+            stderr.writeLine fmt"错误: 重命名失败: {oldPath} -> {newPath}, {e.msg}"
+            errorCount += 1
     
-    # --- 字幕文件处理 (新逻辑) ---
-    # 如果没找到视频文件，则使用缓存中的名称
-    if matchedVideoName.len == 0:
-      matchedVideoName = cachedNameOnly # 使用缓存中的名称作为后备
+    # 处理字幕文件
+    if videoName.len == 0:
+      videoName = cachedName
 
-    # 查找所有匹配视频文件名的字幕文件
-    var matchedSubFiles: seq[string] = @[]
-    for file in filesInTargetDir:
+    # 查找匹配的字幕文件
+    var subFiles: seq[string] = @[]
+    for file in files:
       if isSubtitleFile(file):
-        let (_, subNameFull, _) = splitFile(file)
+        let (_, subName, _) = splitFile(file)
         
-        # 1. 尝试直接匹配文件名
-        if subNameFull == matchedVideoName:
-          matchedSubFiles.add(file)
+        # 直接匹配
+        if subName == videoName:
+          subFiles.add(file)
           continue
-          
-        # 2. 尝试匹配清理后的文件名
-        let cleanedSubName = getCleanedBaseName(subNameFull)
+        
+        # 匹配清理后名称
+        let cleanedSubName = getCleanedBaseName(subName)
         if cleanedSubName == cleanedCachedName:
-          matchedSubFiles.add(file)
+          subFiles.add(file)
           continue
-          
-        # 3. 尝试递归分割字幕文件名
-        var currentName = subNameFull
+        
+        # 递归分割匹配
+        var curName = subName
         var depth = 0
-        let maxDepth = 5  # 设置递归深度限制
-        while currentName.len > 0 and currentName.find('.') != -1 and depth < maxDepth:
+        while curName.len > 0 and curName.find('.') != -1 and depth < 5:
           depth += 1
-          
-          # 使用rfind找到最后一个点号，从后向前分割
-          let lastDotPos = currentName.rfind('.')
-          if lastDotPos == -1:
-            break  # 安全检查
-            
-          let nameBase = currentName[0 ..< lastDotPos]
-          
-          # 检查是否匹配
-          if nameBase == matchedVideoName or getCleanedBaseName(nameBase) == cleanedCachedName:
-            matchedSubFiles.add(file)
+          let lastDot = curName.rfind('.')
+          if lastDot == -1:
             break
             
-          # 更新下一次迭代的名称
-          currentName = nameBase
+          let nameBase = curName[0 ..< lastDot]
+          if nameBase == videoName or getCleanedBaseName(nameBase) == cleanedCachedName:
+            subFiles.add(file)
+            break
+            
+          curName = nameBase
 
-    # 记录找到的匹配字幕文件
-    logDebug(fmt"剧集 {epKey} 找到的匹配字幕文件: {matchedSubFiles}")
-    
-    # 重命名匹配的字幕文件
-    for subFile in matchedSubFiles:
-      # 在重命名字幕文件之前处理文件名
-      let oldSubPath = targetSeasonPath / subFile
-
-      # 递归获取字幕文件的后缀
-      proc getSubtitleExt(subFilename: string, videoBaseName: string): string =
-        # 先尝试直接分割
-        let (_, name, ext) = splitFile(subFilename)
-        
-        # 如果文件名直接匹配，返回扩展名
-        if name == videoBaseName:
-          return ext
-        
-        # 如果没有点号，则无法进一步分割
-        if name.find('.') == -1:
-          return ext
-        
-        # 递归分割
-        let (_, innerName, innerExt) = splitFile(name)
-        
-        # 检查分割后的内部名称是否与视频名匹配
-        if innerName == videoBaseName:
-          # 匹配成功，返回内部扩展名+原始扩展名
-          return innerExt & ext
-        
-        # 继续递归分割
-        let remainingSuffix = getSubtitleExt(innerName, videoBaseName)
-        if remainingSuffix.len > 0:
-          return remainingSuffix & innerExt & ext
-        
-        # 如果无法匹配，返回原始扩展名
-        return ext
-
-      # 获取视频文件名作为基准
-      let videoBaseName = if matchedVideoName.len > 0: matchedVideoName else: cleanedCachedName
-
-      # 获取字幕文件的后缀
-      let subExt = getSubtitleExt(subFile, videoBaseName)
-      logDebug(fmt"字幕处理: 文件='{subFile}', 视频名='{videoBaseName}', 获取到后缀='{subExt}'")
-
+    # 重命名字幕文件
+    for subFile in subFiles:
+      let oldSubPath = targetPath / subFile
+      
+      # 获取字幕后缀
+      let videoBaseName = if videoName.len > 0: videoName else: cleanedCachedName
+      let subExt = getSubtitleSuffix(subFile, videoBaseName)
+      
       # 构建新路径
-      let newSubPath = targetSeasonPath / (newFileNameBasePart & subExt)
+      let newSubPath = targetPath / (newBaseName & subExt)
 
       if oldSubPath != newSubPath and fileExists(oldSubPath):
         try:
           moveFile(oldSubPath, newSubPath)
-          renamedFilesCount += 1
-          logDebug(fmt"重命名字幕成功: '{oldSubPath}' -> '{newSubPath}'")
+          renamedCount += 1
+          logDebug(fmt"重命名字幕: '{oldSubPath}' -> '{newSubPath}'")
         except OSError as e:
-          stderr.writeLine fmt"错误: 重命名字幕文件 '{oldSubPath}' 到 '{newSubPath}' 失败: {e.msg}"
-          renameErrorsCount += 1
-          logDebug(fmt"重命名字幕失败: '{oldSubPath}' -> '{newSubPath}', 错误: {e.msg}")
-      else:
-        if oldSubPath == newSubPath:
-          logDebug(fmt"字幕文件名已正确，无需重命名: '{oldSubPath}'")
-        else:
-          stderr.writeLine fmt"警告: 预期的字幕文件 '{oldSubPath}' 在尝试重命名时未找到。"
-          logDebug(fmt"字幕文件未找到: '{oldSubPath}'")
+          stderr.writeLine fmt"错误: 重命名失败: {oldSubPath} -> {newSubPath}, {e.msg}"
+          errorCount += 1
   
   # 总结
-  if renameErrorsCount > 0:
-    stderr.writeLine fmt"番剧 '{seasonInfo.bangumiSeasonName}' 重命名期间发生 {renameErrorsCount} 个错误。"
+  if errorCount > 0:
+    stderr.writeLine fmt"重命名过程中有 {errorCount} 个错误"
   
-  logDebug(fmt"重命名完成: 成功重命名 {renamedFilesCount} 个文件，失败 {renameErrorsCount} 个文件")
+  logDebug(fmt"重命名完成: 成功={renamedCount}, 失败={errorCount}")
 
 # --- 缓存处理相关函数 (从原 core/cache_manager.nim 移动过来) ---
-proc extractEpisodeNumberFromName*(fileName: string): Option[float] =
-  ## 尝试从文件名中提取剧集号 (可能包含小数)。
+proc extractEpisodeNumber*(fileName: string): Option[float] =
+  # 尝试从文件名中提取剧集号
   let patterns = [
-    re"S\d+[._-]?E(\d+(?:\.\d+)?)\b", # E20 or E20.5
-    re"\b(?:EP|E|第|\[)\s*(\d+(?:\.\d+)?)\b", # EP20, E 20, 第20, [20, EP20.5, E 20.5
-    re"\[(\d+(?:\.\d+)?)\]", # [20], [20.5]
-    re"\s-\s(\d+(?:\.\d+)?)\b", # - 20, - 20.5
-    re"\b(\d+(?:\.\d+)?)\s*\[", # 20 [, 20.5 [
-    re"\b(\d+(?:\.\d+)?)(?:v\d)?\b"  # 20, 20.5 (作为最后的捕获，可能较宽泛), 忽略可能的 v2, v3 版本号
+    re"S\d+[._-]?E(\d+(?:\.\d+)?)\b",               # S01E20, S01E20.5
+    re"\b(?:EP|E|第|\[)\s*(\d+(?:\.\d+)?)\b",       # EP20, E20, 第20, [20
+    re"\[(\d+(?:\.\d+)?)\]",                        # [20], [20.5]
+    re"\s-\s(\d+(?:\.\d+)?)\b",                     # - 20, - 20.5
+    re"\b(\d+(?:\.\d+)?)\s*\[",                     # 20 [, 20.5 [
+    re"\b(\d+(?:\.\d+)?)(?:v\d)?\b"                 # 20, 20.5, 20v2
   ]
+  
   for pattern in patterns:
     var match: array[1, string]
     if fileName.find(pattern, match) != -1:
@@ -670,68 +570,74 @@ proc extractEpisodeNumberFromName*(fileName: string): Option[float] =
         return some(parseFloat(match[0]))
       except ValueError:
         continue
+        
   return none[float]()
 
-proc formatEpisodeNumber*(currentSort: float, totalEpisodes: int): string =
-  ## 根据总集数格式化剧集编号，例如 E01, E20.5。
-  let sortInt = int(currentSort)
-  # 检查 currentSort 是否非常接近一个整数，如果是，则当作整数处理小数部分
-  let sortFrac = if abs(currentSort - round(currentSort)) < 0.0001: 0.0 else: currentSort - float(sortInt)
-
+proc formatEpisodeNumber*(sort: float, total: int): string =
+  # 根据总集数格式化剧集编号
+  let sortInt = int(sort)
+  let hasFraction = abs(sort - round(sort)) >= 0.0001
+  
   var numStr = $sortInt
   var prefix = "E"
-  var requiredDigits = 1
-  if totalEpisodes >= 10000: requiredDigits = 5
-  elif totalEpisodes >= 1000: requiredDigits = 4
-  elif totalEpisodes >= 100: requiredDigits = 3
-  elif totalEpisodes >= 10: requiredDigits = 2
+  var digits = 1
   
-  let zerosToPad = requiredDigits - numStr.len
-  if zerosToPad > 0:
-    for _ in 1 .. zerosToPad: prefix.add('0')
+  if total >= 10000: digits = 5
+  elif total >= 1000: digits = 4
+  elif total >= 100: digits = 3
+  elif total >= 10: digits = 2
   
-  var formattedEpStr = prefix & numStr
-  if sortFrac > 0.001: # 使用一个小的阈值来处理浮点数精度
-    let fracStr = $sortFrac
+  # 补零
+  let zeros = digits - numStr.len
+  if zeros > 0:
+    for _ in 1 .. zeros: 
+      prefix.add('0')
+  
+  var result = prefix & numStr
+  
+  # 处理小数部分
+  if hasFraction:
+    let frac = sort - float(sortInt)
+    let fracStr = $frac
+    
     if fracStr.startsWith("0."):
-      formattedEpStr.add(fracStr[1 .. ^1]) # 添加 ".5"
+      result.add(fracStr[1 .. ^1])
     elif fracStr.startsWith("."):
-      formattedEpStr.add(fracStr)
-    else: # 对于像 "1.0" 这样的情况（如果 sortFrac 意外地是这样），这可能不是预期的
-          # 但对于典型的 .5, .25 应该是安全的
-      formattedEpStr.add("." & fracStr.replace("0.", ".")) # 确保移除 "0."
-  return formattedEpStr
+      result.add(fracStr)
+    else:
+      result.add("." & fracStr.replace("0.", "."))
+      
+  return result
 
-proc appendToCacheCsv*(originalInputName: string, seasonId: int, seasonName: string, cacheFilePath: string) =
-  ## 将番剧的原始文件夹名、Bangumi番剧名和Bangumi番剧ID追加到 cache.csv。
-  let line = fmt"{originalInputName},{seasonName},{seasonId}"
+proc appendToCacheCsv*(folder: string, id: int, name: string, path: string) =
+  # 将番剧信息追加到CSV缓存
+  let line = fmt"{folder},{name},{id}"
   try:
-    let f = open(cacheFilePath, fmAppend)
+    let f = open(path, fmAppend)
     defer: f.close()
     f.writeLine(line)
   except IOError as e:
-    echo &"错误: 追加到 {cacheFilePath} 失败: {e.msg}"
+    echo &"错误: 写入缓存失败: {path}, {e.msg}"
 
-proc readCsvCacheEntries*(filePath: string): Table[string, CsvCacheEntry] =
-  ## 从 cache.csv 加载原始文件夹名到 Bangumi Season ID 的映射。
-  ## 忽略文件的第一行，因为它包含程序配置信息。
+proc readCsvCache*(path: string): Table[string, CsvCacheEntry] =
+  # 读取CSV缓存
   result = initTable[string, CsvCacheEntry]()
-  if not fileExists(filePath):
+  if not fileExists(path):
     return
   
-  var isFirstLine = true
+  var skipFirst = true
   try:
-    for line in lines(filePath):
-      let strippedLine = line.strip()
-      # 跳过第一行（配置信息）、空行和注释行
-      if isFirstLine:
-        isFirstLine = false
+    for line in lines(path):
+      # 跳过首行(配置信息)、空行和注释
+      if skipFirst:
+        skipFirst = false
         continue
       
-      if strippedLine.len == 0 or strippedLine.startsWith("#"):
+      let stripped = line.strip()
+      if stripped.len == 0 or stripped.startsWith("#"):
         continue
         
-      let parts = strippedLine.split(',')
+      let parts = stripped.split(',')
       if parts.len == 3: 
         try:
           let entry = CsvCacheEntry(
@@ -741,94 +647,99 @@ proc readCsvCacheEntries*(filePath: string): Table[string, CsvCacheEntry] =
           )
           result[entry.originalFolderName] = entry
         except ValueError:
-          echo fmt"警告: 解析 cache.csv 行时ID无效: {strippedLine}"
+          echo fmt"警告: 解析缓存ID无效: {stripped}"
       else:
-        echo fmt"警告: cache.csv 行格式无法识别 (期望3个字段): {strippedLine}"
+        echo fmt"警告: 缓存行格式错误: {stripped}"
   except IOError as e:
-    echo &"错误: 读取 {filePath} 失败: {e.msg}"
+    echo &"错误: 读取缓存失败: {path}, {e.msg}"
 
-proc loadJsonCache*(filePath: string): Table[string, CachedSeasonInfo] =
-  ## 从 cache.json 加载番剧剧集缓存数据。
+proc loadJsonCache*(path: string): Table[string, CachedSeasonInfo] =
+  # 从JSON缓存加载番剧数据
   result = initTable[string, CachedSeasonInfo]()
-  if not fileExists(filePath):
+  if not fileExists(path):
     return
+    
   try:
-    let content = readFile(filePath)
+    let content = readFile(path)
     if content.len == 0:
       return
+      
     let jsonData = parseJson(content)
     if jsonData.kind == JObject:
-      for seasonIdKey, seasonNode in jsonData.pairs:
+      for idKey, seasonNode in jsonData.pairs:
         try:
-          result[seasonIdKey] = seasonNode.to(CachedSeasonInfo)
+          result[idKey] = seasonNode.to(CachedSeasonInfo)
         except JsonKindError, ValueError: 
-          echo fmt"警告: 解析 cache.json 中番剧ID '{seasonIdKey}' 的数据失败。"
+          echo fmt"警告: 解析JSON缓存失败, ID='{idKey}'"
     else:
-      echo &"警告: {filePath} 的根不是一个有效的 JSON 对象。"
+      echo &"警告: {path} 不是有效的JSON对象"
   except JsonParsingError as e:
-    echo &"错误: 解析 {filePath} (JSON) 失败: {e.msg}"
+    echo &"错误: 解析JSON缓存失败: {path}, {e.msg}"
   except IOError as e:
-    echo &"错误: 读取 {filePath} 失败: {e.msg}"
+    echo &"错误: 读取缓存失败: {path}, {e.msg}"
 
-proc saveJsonCache*(filePath: string, cacheData: Table[string, CachedSeasonInfo]) =
-  ## 将番剧剧集缓存数据保存到 cache.json，并确保番剧ID和剧集按顺序排列。
+proc saveJsonCache*(path: string, cache: Table[string, CachedSeasonInfo]) =
+  # 保存番剧数据到JSON缓存
   var rootNode = newJObject()
-  var sortedSeasonIdInts = newSeq[int]()
-  for seasonIdKey in cacheData.keys:
+  var sortedIds = newSeq[int]()
+  
+  # 收集并排序番剧ID
+  for idKey in cache.keys:
     try:
-      sortedSeasonIdInts.add(parseInt(seasonIdKey))
+      sortedIds.add(parseInt(idKey))
     except ValueError:
       continue
   
-  sortedSeasonIdInts.sort(cmp[int])
+  sortedIds.sort(cmp[int])
 
-  for seasonIdInt in sortedSeasonIdInts:
-    let seasonIdKey = $seasonIdInt 
-    if not cacheData.hasKey(seasonIdKey):
-        continue
+  # 按ID顺序构建JSON
+  for id in sortedIds:
+    let idKey = $id
+    if not cache.hasKey(idKey):
+      continue
     
-    let seasonInfo = cacheData[seasonIdKey]
-    var seasonInfoNode = newJObject()
+    let seasonInfo = cache[idKey]
+    var seasonNode = newJObject()
 
-    seasonInfoNode["bangumiSeasonId"] = %*(seasonInfo.bangumiSeasonId)
-    seasonInfoNode["bangumiSeasonName"] = %*(seasonInfo.bangumiSeasonName)
-    seasonInfoNode["totalBangumiEpisodes"] = %*(seasonInfo.totalBangumiEpisodes)
+    seasonNode["bangumiSeasonId"] = %*(seasonInfo.bangumiSeasonId)
+    seasonNode["bangumiSeasonName"] = %*(seasonInfo.bangumiSeasonName)
+    seasonNode["totalBangumiEpisodes"] = %*(seasonInfo.totalBangumiEpisodes)
 
-    var sortedEpisodeKeys = newSeq[string]()
+    # 处理剧集信息
     if seasonInfo.episodes.len > 0: 
-      for epKey in seasonInfo.episodes.keys:
-        sortedEpisodeKeys.add(epKey)
-      
-      sortedEpisodeKeys.sort(cmp[string]) 
+      var sortedEpKeys = toSeq(seasonInfo.episodes.keys)
+      sortedEpKeys.sort(cmp[string]) 
 
       var episodesNode = newJObject()
-      for epKey in sortedEpisodeKeys:
+      for epKey in sortedEpKeys:
         if seasonInfo.episodes.hasKey(epKey):
           episodesNode[epKey] = %*(seasonInfo.episodes[epKey])
-      seasonInfoNode["episodes"] = episodesNode 
+      
+      seasonNode["episodes"] = episodesNode 
     else:
-      seasonInfoNode["episodes"] = newJObject() 
-    rootNode[seasonIdKey] = seasonInfoNode   
+      seasonNode["episodes"] = newJObject() 
+      
+    rootNode[idKey] = seasonNode   
 
   try:
-    writeFile(filePath, pretty(rootNode))
+    writeFile(path, pretty(rootNode))
   except IOError as e:
-    echo &"错误: 写入到 {filePath} 失败: {e.msg}"
+    echo &"错误: 写入缓存失败: {path}, {e.msg}"
 
 proc readDir*(path: string): seq[string] =
-  ## 读取指定路径下的所有文件夹名称。
+  # 读取目录下的所有文件夹
   var dirs = newSeq[string]()
   try:
     for item in walkDir(path):
       if item.kind == pcDir:
         dirs.add(item.path.extractFilename())
   except OSError as e:
-    stderr.writeLine fmt"错误: 读取目录 '{path}' 失败: {e.msg}"
+    stderr.writeLine fmt"错误: 读取目录失败: {path}, {e.msg}"
+  
   return dirs
 
 # --- 向后兼容函数 ---
-proc getCleanSubtitleExtension*(originalFullExt: string, videoBaseName: string = ""): string =
-  ## 向后兼容版本的字幕扩展名处理函数
-  ## 从完整的扩展名字符串中提取干净的字幕后缀
-  let subInfo = parseSubtitleExtension(originalFullExt, videoBaseName)
+proc getCleanSubtitleExtension*(fullExt: string, videoBaseName: string = ""): string =
+  # 向后兼容的字幕扩展名处理函数
+  let subInfo = parseSubtitleExtension(fullExt, videoBaseName)
   return subInfo.suffix
