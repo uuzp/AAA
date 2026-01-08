@@ -31,7 +31,7 @@
 - 源码构建：
 
 ```powershell
-zig build -Doptimize=ReleaseSmall
+zig build
 ```
 
 构建产物（Windows 示例）：`zig-out/bin/aaa.exe`

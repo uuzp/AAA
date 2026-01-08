@@ -27,7 +27,7 @@ Key features:
 - Build from source:
 
 ```powershell
-zig build -Doptimize=ReleaseSmall
+zig build
 ```
 
 Build output (Windows example): `zig-out/bin/aaa.exe`
